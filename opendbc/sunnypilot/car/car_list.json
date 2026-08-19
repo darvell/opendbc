@@ -3076,6 +3076,17 @@
     ],
     "package": "EyeSight Driver Assistance"
   },
+  "Subaru Crosstrek 2024-25": {
+    "platform": "SUBARU_CROSSTREK_2025",
+    "make": "Subaru",
+    "brand": "subaru",
+    "model": "Crosstrek",
+    "year": [
+      "2024",
+      "2025"
+    ],
+    "package": "All"
+  },
   "Subaru Forester 2017-18": {
     "platform": "SUBARU_FORESTER_PREGLOBAL",
     "make": "Subaru",
