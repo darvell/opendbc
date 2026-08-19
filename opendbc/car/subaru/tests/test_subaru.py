@@ -1,9 +1,13 @@
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
+from opendbc.can import CANPacker
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.fingerprints import FW_VERSIONS
+from opendbc.car.subaru.values import CarControllerParams
+from opendbc.car.vehicle_model import VehicleModel
 
 
 class TestSubaruFingerprint(unittest.TestCase):
@@ -18,15 +22,15 @@ class TestSubaruFingerprint(unittest.TestCase):
 class TestSubaruAngleController(unittest.TestCase):
   def setUp(self):
     self.controller = CarController.__new__(CarController)
-    self.controller.p = SimpleNamespace(
+    self.controller.p = cast(CarControllerParams, SimpleNamespace(
       STEER_OVERRIDE_TORQUE_HIGH=200,
       STEER_OVERRIDE_TORQUE_LOW=150,
       ANGLE_INACTIVE_MAX=650,
-    )
+    ))
     self.controller.apply_angle_last = 0.0
     self.controller.driver_override = False
-    self.controller.packer = object()
-    self.controller.VM = object()
+    self.controller.packer = cast(CANPacker, object())
+    self.controller.VM = cast(VehicleModel, object())
 
   @staticmethod
   def control(lat_active=True, angle=0.0):
