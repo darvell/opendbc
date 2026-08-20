@@ -85,8 +85,13 @@ class TestSubaruSurroundings(unittest.TestCase):
 
   @staticmethod
   def parsers(bsm=None, bsm_updated=True, sonar=None, sonar_updated=True):
-    if bsm is None:
-      bsm = {"L_ADJACENT": 0, "L_APPROACHING": 0, "R_ADJACENT": 0, "R_APPROACHING": 0}
+    bsm_values = {
+      "L_ADJACENT": 0, "L_APPROACHING": 0, "R_ADJACENT": 0, "R_APPROACHING": 0,
+      "L_RCTA": 0, "R_RCTA": 0,
+    }
+    if bsm is not None:
+      bsm_values.update(bsm)
+    bsm = bsm_values
     if sonar is None:
       sonar = {
         "Sonar_Available": 1, "Sonar_Off": 0, "Sonar_System_Halt": 0, "Sonar_System_Fail": 0,
@@ -121,6 +126,11 @@ class TestSubaruSurroundings(unittest.TestCase):
     self.assertTrue(ret.leftBlindspot)
     self.assertTrue(ret.rightBlindspot)
 
+  def test_rear_cross_traffic_is_preserved_separately(self):
+    _, ret_sp = self.update(bsm={"L_RCTA": 1, "R_RCTA": 0})
+    self.assertTrue(ret_sp.rearCrossTrafficLeft)
+    self.assertFalse(ret_sp.rearCrossTrafficRight)
+
   def test_sonar_warning_and_fault_states(self):
     sonar = {
       "Sonar_Available": 1, "Sonar_Off": 0, "Sonar_System_Halt": 0, "Sonar_System_Fail": 0,
@@ -140,4 +150,3 @@ class TestSubaruSurroundings(unittest.TestCase):
   def test_synthesized_rab_status_matches_normal_stock_state(self):
     _, dat, _ = create_es_static_1(CANPacker("subaru_global_2017_generated"))
     self.assertEqual(dat[2], 0xC0)
-

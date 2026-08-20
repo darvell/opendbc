@@ -54,6 +54,8 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
       ret_sp.blindSpotRightAdjacent = right_adjacent
       ret_sp.blindSpotRightApproaching = right_approaching
       ret_sp.blindSpotMonitorValid = self.bsm_stale_frames <= self.BSM_STALE_FRAMES
+      ret_sp.rearCrossTrafficLeft = bsm["L_RCTA"] == 1
+      ret_sp.rearCrossTrafficRight = bsm["R_RCTA"] == 1
 
       # Treat stale BSM data as occupied. Positive detection is a veto; missing data is never permission.
       ret.leftBlindspot = left_adjacent or left_approaching or self.left_approaching_hold_frames > 0 or not ret_sp.blindSpotMonitorValid
