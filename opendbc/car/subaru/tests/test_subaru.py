@@ -4,9 +4,12 @@ from typing import cast
 from unittest.mock import patch
 
 from opendbc.can import CANPacker
+from opendbc.car import structs
 from opendbc.car.subaru.carcontroller import CarController
+from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.fingerprints import FW_VERSIONS
-from opendbc.car.subaru.values import CarControllerParams
+from opendbc.car.subaru.subarucan import create_es_static_1
+from opendbc.car.subaru.values import CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
 
 
@@ -82,3 +85,71 @@ class TestSubaruAngleController(unittest.TestCase):
     self.assertEqual(low_brake[0], CarControllerParams.THROTTLE_ENGINE_BRAKE)
     self.assertEqual(low_brake[2], 350)
     self.assertEqual(high_brake[2], 295)
+
+
+class TestSubaruSurroundings(unittest.TestCase):
+  def setUp(self):
+    self.carstate = CarState.__new__(CarState)
+    self.carstate.CP = SimpleNamespace(enableBsm=True, flags=SubaruFlags.GLOBAL_GEN2)
+    self.carstate.bsm_stale_frames = 0
+    self.carstate.left_approaching_hold_frames = 0
+    self.carstate.right_approaching_hold_frames = 0
+    self.carstate.sonar_stale_frames = 0
+
+  @staticmethod
+  def parsers(bsm=None, bsm_updated=True, sonar=None, sonar_updated=True):
+    if bsm is None:
+      bsm = {"L_ADJACENT": 0, "L_APPROACHING": 0, "R_ADJACENT": 0, "R_APPROACHING": 0}
+    if sonar is None:
+      sonar = {
+        "Sonar_Available": 1, "Sonar_Off": 0, "Sonar_System_Halt": 0, "Sonar_System_Fail": 0,
+        "Sonar_Warn_Left": 0, "Sonar_Warn_Center": 0, "Sonar_Warn_Right": 0,
+        "RAB_Available": 1, "RAB_Off": 0, "RAB_Warn_State": 0,
+      }
+    bsm_all = {key: ([value] if bsm_updated else []) for key, value in bsm.items()}
+    sonar_all = {key: ([value] if sonar_updated else []) for key, value in sonar.items()}
+    return SimpleNamespace(vl={"BSD_RCTA": bsm}, vl_all={"BSD_RCTA": bsm_all}), \
+      SimpleNamespace(vl={"ES_STATIC_1": sonar}, vl_all={"ES_STATIC_1": sonar_all})
+
+  def update(self, **kwargs):
+    cp, cp_cam = self.parsers(**kwargs)
+    ret, ret_sp = structs.CarState(), structs.CarStateSP()
+    self.carstate.update_subaru_surroundings(cp, cp_cam, ret, ret_sp)
+    return ret, ret_sp
+
+  def test_approaching_vehicle_is_held_after_raw_signal_clears(self):
+    ret, ret_sp = self.update(bsm={"L_ADJACENT": 0, "L_APPROACHING": 1, "R_ADJACENT": 0, "R_APPROACHING": 0})
+    self.assertTrue(ret.leftBlindspot)
+    self.assertTrue(ret_sp.blindSpotLeftApproaching)
+
+    ret, ret_sp = self.update()
+    self.assertTrue(ret.leftBlindspot)
+    self.assertFalse(ret_sp.blindSpotLeftApproaching)
+    self.assertEqual(self.carstate.left_approaching_hold_frames, self.carstate.BSM_APPROACHING_HOLD_FRAMES - 1)
+
+  def test_stale_bsm_fails_closed(self):
+    self.carstate.bsm_stale_frames = self.carstate.BSM_STALE_FRAMES
+    ret, ret_sp = self.update(bsm_updated=False)
+    self.assertFalse(ret_sp.blindSpotMonitorValid)
+    self.assertTrue(ret.leftBlindspot)
+    self.assertTrue(ret.rightBlindspot)
+
+  def test_sonar_warning_and_fault_states(self):
+    sonar = {
+      "Sonar_Available": 1, "Sonar_Off": 0, "Sonar_System_Halt": 0, "Sonar_System_Fail": 0,
+      "Sonar_Warn_Left": 2, "Sonar_Warn_Center": 4, "Sonar_Warn_Right": 1,
+      "RAB_Available": 1, "RAB_Off": 0, "RAB_Warn_State": 2,
+    }
+    _, ret_sp = self.update(sonar=sonar)
+    self.assertTrue(ret_sp.rearSonarValid)
+    self.assertEqual((ret_sp.rearSonarLeft, ret_sp.rearSonarCenter, ret_sp.rearSonarRight), (2, 4, 1))
+    self.assertEqual(ret_sp.rearAutomaticBrakingAlert, 2)
+
+    sonar["Sonar_System_Fail"] = 1
+    _, ret_sp = self.update(sonar=sonar)
+    self.assertFalse(ret_sp.rearSonarValid)
+    self.assertTrue(ret_sp.rearSonarSystemFaulted)
+
+  def test_synthesized_rab_status_matches_normal_stock_state(self):
+    _, dat, _ = create_es_static_1(CANPacker("subaru_global_2017_generated"))
+    self.assertEqual(dat[2], 0xC0)

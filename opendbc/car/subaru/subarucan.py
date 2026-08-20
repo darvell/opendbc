@@ -266,8 +266,10 @@ def create_es_highbeamassist(packer):
 
 
 def create_es_static_1(packer):
+  # Normal available/on state recovered from stock 0x325. Warning fields remain clear.
   values = {
-    "SET_3": 3,
+    "RAB_Available": 1,
+    "Sonar_Available": 1,
   }
 
   return packer.make_can_msg("ES_STATIC_1", CanBus.main, values)

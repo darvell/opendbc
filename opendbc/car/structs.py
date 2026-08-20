@@ -166,3 +166,20 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+
+  blindSpotLeftAdjacent: bool = auto_field()
+  blindSpotLeftApproaching: bool = auto_field()
+  blindSpotRightAdjacent: bool = auto_field()
+  blindSpotRightApproaching: bool = auto_field()
+  blindSpotMonitorValid: bool = auto_field()
+
+  rearSonarAvailable: bool = auto_field()
+  rearSonarValid: bool = auto_field()
+  rearSonarLeft: int = auto_field()
+  rearSonarCenter: int = auto_field()
+  rearSonarRight: int = auto_field()
+  rearSonarSystemHalted: bool = auto_field()
+  rearSonarSystemFaulted: bool = auto_field()
+  rearAutomaticBrakingAvailable: bool = auto_field()
+  rearAutomaticBrakingState: int = auto_field()
+  rearAutomaticBrakingAlert: int = auto_field()
