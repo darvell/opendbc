@@ -92,9 +92,8 @@ class CarInterface(CarInterfaceBase):
     else:
       raise ValueError(f"unknown car: {candidate}")
 
-    # TODO: the longitudinal limits need to be speed-dependent, so alpha long is disabled for now
-    # revert this in the PR that re-enables Subaru longitudinal: https://github.com/commaai/opendbc/pull/3689
-    ret.alphaLongitudinalAvailable = False
+    # Experimental and data-derived for the Gen3 Crosstrek only. Other Subaru platforms stay disabled.
+    ret.alphaLongitudinalAvailable = candidate == CAR.SUBARU_CROSSTREK_2025
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
 
     if ret.flags & SubaruFlags.GLOBAL_GEN2 and ret.openpilotLongitudinalControl:

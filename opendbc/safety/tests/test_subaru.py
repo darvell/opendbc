@@ -3,6 +3,7 @@ import enum
 import unittest
 import numpy as np
 
+from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.values import SubaruSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.car.vehicle_model import VehicleModel
@@ -21,11 +22,16 @@ class SubaruMsg(enum.IntEnum):
   Wheel_Speeds      = 0x13a
   ES_LKAS           = 0x122
   ES_LKAS_ANGLE     = 0x124
+  ES_Brake          = 0x220
   ES_Distance       = 0x221
   ES_Status         = 0x222
   ES_DashStatus     = 0x321
   ES_LKAS_State     = 0x322
   ES_Infotainment   = 0x323
+  ES_HighBeamAssist = 0x22A
+  ES_STATIC_1       = 0x325
+  ES_STATIC_2       = 0x121
+  ES_UDS_Request    = 0x787
 
 
 SUBARU_MAIN_BUS = 0
@@ -39,6 +45,18 @@ def lkas_tx_msgs(alt_bus, lkas_msg=SubaruMsg.ES_LKAS):
           [SubaruMsg.ES_DashStatus,     SUBARU_MAIN_BUS],
           [SubaruMsg.ES_LKAS_State,     SUBARU_MAIN_BUS],
           [SubaruMsg.ES_Infotainment,   SUBARU_MAIN_BUS]]
+
+
+def long_tx_msgs(alt_bus):
+  return [[SubaruMsg.ES_Brake, alt_bus],
+          [SubaruMsg.ES_Status, alt_bus]]
+
+
+def gen2_long_additional_tx_msgs():
+  return [[SubaruMsg.ES_UDS_Request, SUBARU_CAM_BUS],
+          [SubaruMsg.ES_HighBeamAssist, SUBARU_MAIN_BUS],
+          [SubaruMsg.ES_STATIC_1, SUBARU_MAIN_BUS],
+          [SubaruMsg.ES_STATIC_2, SUBARU_MAIN_BUS]]
 
 
 def fwd_blacklisted_addr(lkas_msg=SubaruMsg.ES_LKAS):
@@ -265,6 +283,68 @@ class TestSubaruAngleSafetyBase(TestSubaruSafetyBase, common.AngleSteeringSafety
       self.assertFalse(self._tx(self._angle_cmd_msg((self.STEER_ANGLE_MAX + 1) * sign, False)))
 
 
+class SubaruDynamicLongitudinalSafetyMixin:
+  GAS_BP = [0., 5., 30.]
+  GAS_MAX = [3100., 3410., 4000.]
+  RPM_MAX = [900., 1850., 3100.]
+  BRAKE_BP = [0., 10., 30.]
+  BRAKE_MAX = [410., 330., 330.]
+
+  def _send_brake_msg(self, brake):
+    return self.packer.make_can_msg_safety("ES_Brake", self.ALT_MAIN_BUS, {"Brake_Pressure": brake})
+
+  def _send_gas_msg(self, gas):
+    return self.packer.make_can_msg_safety("ES_Distance", self.ALT_MAIN_BUS, {"Cruise_Throttle": gas})
+
+  def _send_rpm_msg(self, rpm):
+    return self.packer.make_can_msg_safety("ES_Status", self.ALT_MAIN_BUS, {"Cruise_RPM": rpm})
+
+  def test_speed_dependent_longitudinal_limits(self):
+    for speed in np.linspace(0., 35., 15):
+      speed = round_speed(away_round(speed * 3.6 / 0.057) * 0.057 / 3.6)
+      self._reset_speed_measurement(speed)
+      self.safety.set_controls_allowed(True)
+      max_gas = int(np.interp(speed, self.GAS_BP, self.GAS_MAX)) + 1
+      max_rpm = int(np.interp(speed, self.GAS_BP, self.RPM_MAX)) + 1
+      max_brake = int(np.interp(speed, self.BRAKE_BP, self.BRAKE_MAX)) + 1
+
+      self.assertTrue(self._tx(self._send_gas_msg(max_gas)))
+      self.assertFalse(self._tx(self._send_gas_msg(max_gas + 1)))
+      self.assertTrue(self._tx(self._send_rpm_msg(max_rpm)))
+      self.assertFalse(self._tx(self._send_rpm_msg(max_rpm + 1)))
+      self.assertTrue(self._tx(self._send_brake_msg(max_brake)))
+      self.assertFalse(self._tx(self._send_brake_msg(max_brake + 1)))
+
+      self.safety.set_controls_allowed(False)
+      self.assertTrue(self._tx(self._send_gas_msg(self.INACTIVE_GAS)))
+      self.assertTrue(self._tx(self._send_rpm_msg(0)))
+      self.assertTrue(self._tx(self._send_brake_msg(0)))
+      self.assertFalse(self._tx(self._send_gas_msg(max_gas)))
+
+  def test_controller_commands_fit_safety_envelope(self):
+    for speed in np.linspace(0., 35., 71):
+      max_gas = np.interp(speed, self.GAS_BP, self.GAS_MAX) + 1
+      max_rpm = np.interp(speed, self.GAS_BP, self.RPM_MAX) + 1
+      max_brake = np.interp(speed, self.BRAKE_BP, self.BRAKE_MAX) + 1
+      throttle, rpm, _ = CarController.longitudinal_commands(2.0, speed)
+      _, _, brake = CarController.longitudinal_commands(-3.5, speed)
+      self.assertLessEqual(throttle, max_gas)
+      self.assertLessEqual(rpm, max_rpm)
+      self.assertLessEqual(brake, max_brake)
+
+  def _rdbi_msg(self, did):
+    return b'\x03\x22' + did.to_bytes(2) + b'\x00' * 4
+
+  def _es_uds_msg(self, msg):
+    return libsafety_py.make_CANPacket(SubaruMsg.ES_UDS_Request, SUBARU_CAM_BUS, msg)
+
+  def test_es_uds_message(self):
+    self.assertTrue(self._tx(self._es_uds_msg(b'\x02\x3e\x80' + b'\x00' * 5)))
+    self.assertTrue(self._tx(self._es_uds_msg(self._rdbi_msg(0x1130))))
+    self.assertFalse(self._tx(self._es_uds_msg(self._rdbi_msg(0x1131))))
+    self.assertFalse(self._tx(self._es_uds_msg(b'\x03\xaa\xaa' + b'\x00' * 5)))
+
+
 class TestSubaruGen1AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafetyBase, TestSubaruAngleSafetyBase):
   FLAGS = SubaruSafetyFlags.LKAS_ANGLE
   TX_MSGS = lkas_tx_msgs(SUBARU_MAIN_BUS, SubaruMsg.ES_LKAS_ANGLE)
@@ -280,6 +360,18 @@ class TestSubaruGen2AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafe
   TX_MSGS = lkas_tx_msgs(SUBARU_ALT_BUS, SubaruMsg.ES_LKAS_ANGLE)
   RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS_ANGLE, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
                                                SubaruMsg.ES_Infotainment)}
+  FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE)
+
+
+class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin, TestSubaruAngleSafetyBase):
+  ALT_MAIN_BUS = SUBARU_ALT_BUS
+  ALT_CAM_BUS = SUBARU_ALT_BUS
+  FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LONG | SubaruSafetyFlags.LKAS_ANGLE
+  TX_MSGS = lkas_tx_msgs(SUBARU_ALT_BUS, SubaruMsg.ES_LKAS_ANGLE) + long_tx_msgs(SUBARU_ALT_BUS) + gen2_long_additional_tx_msgs()
+  RELAY_MALFUNCTION_ADDRS = {
+    SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS_ANGLE, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State, SubaruMsg.ES_Infotainment),
+    SUBARU_ALT_BUS: (SubaruMsg.ES_Brake, SubaruMsg.ES_Distance, SubaruMsg.ES_Status),
+  }
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE)
 
 

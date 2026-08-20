@@ -69,3 +69,16 @@ class TestSubaruAngleController(unittest.TestCase):
     self.controller.apply_angle_last = 10.0
     self.controller.lateral_angle(self.control(angle=12), self.state(measured=10, speed=2))
     create_angle_msg.assert_called_once_with(self.controller.packer, 10.0, True)
+
+  def test_speed_dependent_longitudinal_commands(self):
+    low = self.controller.longitudinal_commands(1.0, 5.0)
+    high = self.controller.longitudinal_commands(1.0, 25.0)
+    self.assertGreater(high[0], low[0])
+    self.assertGreater(high[1], low[1])
+    self.assertEqual(low[2], 0)
+
+    low_brake = self.controller.longitudinal_commands(-3.5, 5.0)
+    high_brake = self.controller.longitudinal_commands(-3.5, 25.0)
+    self.assertEqual(low_brake[0], CarControllerParams.THROTTLE_ENGINE_BRAKE)
+    self.assertEqual(low_brake[2], 350)
+    self.assertEqual(high_brake[2], 295)

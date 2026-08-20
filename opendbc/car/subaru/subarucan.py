@@ -181,7 +181,7 @@ def create_es_dashstatus(packer, frame, dashstatus_msg, enabled, long_enabled, l
   return packer.make_can_msg("ES_DashStatus", CanBus.main, values)
 
 
-def create_es_brake(packer, frame, es_brake_msg, long_enabled, long_active, brake_value):
+def create_es_brake(packer, frame, es_brake_msg, long_enabled, long_active, brake_value, bus=CanBus.main):
   values = {s: es_brake_msg[s] for s in [
     "CHECKSUM",
     "Signal1",
@@ -205,10 +205,10 @@ def create_es_brake(packer, frame, es_brake_msg, long_enabled, long_active, brak
     values["Cruise_Brake_Active"] = brake_value > 0
     values["Cruise_Brake_Lights"] = brake_value >= 70
 
-  return packer.make_can_msg("ES_Brake", CanBus.main, values)
+  return packer.make_can_msg("ES_Brake", bus, values)
 
 
-def create_es_status(packer, frame, es_status_msg, long_enabled, long_active, cruise_rpm):
+def create_es_status(packer, frame, es_status_msg, long_enabled, long_active, cruise_rpm, bus=CanBus.main):
   values = {s: es_status_msg[s] for s in [
     "CHECKSUM",
     "Signal1",
@@ -228,7 +228,7 @@ def create_es_status(packer, frame, es_status_msg, long_enabled, long_active, cr
 
     values["Cruise_Activated"] = long_active
 
-  return packer.make_can_msg("ES_Status", CanBus.main, values)
+  return packer.make_can_msg("ES_Status", bus, values)
 
 
 def create_es_infotainment(packer, frame, es_infotainment_msg, visual_alert):

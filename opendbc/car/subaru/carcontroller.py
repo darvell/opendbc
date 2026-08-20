@@ -80,6 +80,24 @@ class CarController(CarControllerBase, SnGCarController):
 
     return subarucan.create_steering_control(self.packer, apply_torque, apply_steer_req)
 
+  @staticmethod
+  def longitudinal_commands(accel, v_ego):
+    if accel >= 0.:
+      throttle_base = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.THROTTLE_BASE_V)
+      throttle_max = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.THROTTLE_MAX_V)
+      rpm_base = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.RPM_BASE_V)
+      rpm_max = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.RPM_MAX_V)
+      throttle = np.interp(accel, [0., 2.], [throttle_base, throttle_max])
+      rpm = np.interp(accel, [0., 2.], [rpm_base, rpm_max])
+      brake = 0.
+    else:
+      max_brake = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_MAX_V)
+      throttle = CarControllerParams.THROTTLE_ENGINE_BRAKE
+      rpm = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_RPM_V)
+      brake = np.interp(accel, [-3.5, 0.], [max_brake, 0.])
+
+    return int(round(throttle)), int(round(rpm)), int(round(brake))
+
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
@@ -97,11 +115,7 @@ class CarController(CarControllerBase, SnGCarController):
     # *** longitudinal ***
 
     if CC.longActive:
-      apply_throttle = int(round(np.interp(actuators.accel, CarControllerParams.THROTTLE_LOOKUP_BP, CarControllerParams.THROTTLE_LOOKUP_V)))
-      apply_rpm = int(round(np.interp(actuators.accel, CarControllerParams.RPM_LOOKUP_BP, CarControllerParams.RPM_LOOKUP_V)))
-      apply_brake = int(round(np.interp(actuators.accel, CarControllerParams.BRAKE_LOOKUP_BP, CarControllerParams.BRAKE_LOOKUP_V)))
-
-      # limit min and max values
+      apply_throttle, apply_rpm, apply_brake = self.longitudinal_commands(actuators.accel, CS.out.vEgoRaw)
       cruise_throttle = np.clip(apply_throttle, CarControllerParams.THROTTLE_MIN, CarControllerParams.THROTTLE_MAX)
       cruise_rpm = np.clip(apply_rpm, CarControllerParams.RPM_MIN, CarControllerParams.RPM_MAX)
       cruise_brake = np.clip(apply_brake, CarControllerParams.BRAKE_MIN, CarControllerParams.BRAKE_MAX)
@@ -144,13 +158,14 @@ class CarController(CarControllerBase, SnGCarController):
 
       if self.CP.openpilotLongitudinalControl:
         if self.frame % 5 == 0:
+          long_bus = CanBus.alt if self.CP.flags & SubaruFlags.GLOBAL_GEN2 else CanBus.main
           can_sends.append(subarucan.create_es_status(self.packer, self.frame // 5, CS.es_status_msg,
-                                                      self.CP.openpilotLongitudinalControl, CC.longActive, cruise_rpm))
+                                                      self.CP.openpilotLongitudinalControl, CC.longActive, cruise_rpm, long_bus))
 
           can_sends.append(subarucan.create_es_brake(self.packer, self.frame // 5, CS.es_brake_msg,
-                                                     self.CP.openpilotLongitudinalControl, CC.longActive, cruise_brake))
+                                                     self.CP.openpilotLongitudinalControl, CC.longActive, cruise_brake, long_bus))
 
-          can_sends.append(subarucan.create_es_distance(self.packer, self.frame // 5, CS.es_distance_msg, 0, pcm_cancel_cmd,
+          can_sends.append(subarucan.create_es_distance(self.packer, self.frame // 5, CS.es_distance_msg, long_bus, pcm_cancel_cmd,
                                                         self.CP.openpilotLongitudinalControl, cruise_brake > 0, cruise_throttle))
       else:
         if pcm_cancel_cmd:

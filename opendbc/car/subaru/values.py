@@ -47,28 +47,26 @@ class CarControllerParams:
     else:
       self.STEER_MAX = 2047
 
-  THROTTLE_MIN = 808
-  THROTTLE_MAX = 3400
+  # Experimental longitudinal maps derived from 65,769 stock EyeSight samples on the validated
+  # 2025 Crosstrek route 38b065e31c0a9ed7/0000000b--eab0d07145.
+  LONG_SPEED_BP = [0., 5., 10., 15., 20., 25., 30.]
+  THROTTLE_BASE_V = [1818., 1908., 1928., 2042., 2350., 2666., 2689.]
+  THROTTLE_MAX_V = [3076., 3299., 3307., 3340., 3765., 3837., 3868.]
+  RPM_BASE_V = [100., 1182., 1216., 1250., 1350., 1514., 1594.]
+  RPM_MAX_V = [843., 1822., 2034., 2050., 2572., 2749., 2750.]
+  BRAKE_RPM_V = [300., 1030., 1050., 1100., 1235., 1350., 1500.]
+  BRAKE_MAX_V = [400., 350., 320., 300., 290., 295., 315.]
 
-  THROTTLE_INACTIVE     = 1818   # corresponds to zero acceleration
-  THROTTLE_ENGINE_BRAKE = 808    # while braking, eyesight sets throttle to this, probably for engine braking
+  THROTTLE_MIN = 808
+  THROTTLE_MAX = 3900
+  THROTTLE_INACTIVE = 1818
+  THROTTLE_ENGINE_BRAKE = 808
 
   BRAKE_MIN = 0
-  BRAKE_MAX = 600                # about -3.5m/s2 from testing
+  BRAKE_MAX = 410
 
   RPM_MIN = 0
-  RPM_MAX = 3600
-
-  RPM_INACTIVE = 600             # a good base rpm for zero acceleration
-
-  THROTTLE_LOOKUP_BP = [0, 2]
-  THROTTLE_LOOKUP_V = [THROTTLE_INACTIVE, THROTTLE_MAX]
-
-  RPM_LOOKUP_BP = [0, 2]
-  RPM_LOOKUP_V = [RPM_INACTIVE, RPM_MAX]
-
-  BRAKE_LOOKUP_BP = [-3.5, 0]
-  BRAKE_LOOKUP_V = [BRAKE_MAX, BRAKE_MIN]
+  RPM_MAX = 2800
 
 
 class SubaruSafetyFlags(IntFlag):
