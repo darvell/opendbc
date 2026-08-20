@@ -172,6 +172,8 @@ class CarStateSP:
   blindSpotRightAdjacent: bool = auto_field()
   blindSpotRightApproaching: bool = auto_field()
   blindSpotMonitorValid: bool = auto_field()
+  rearCrossTrafficLeft: bool = auto_field()
+  rearCrossTrafficRight: bool = auto_field()
 
   rearSonarAvailable: bool = auto_field()
   rearSonarValid: bool = auto_field()
