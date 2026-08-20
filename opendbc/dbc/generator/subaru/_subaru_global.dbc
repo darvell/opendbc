@@ -271,7 +271,19 @@ BO_ 554 ES_HighBeamAssist: 8 XXX
 BO_ 805 ES_STATIC_1: 8 XXX
  SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX
  SG_ COUNTER : 8|4@1+ (1,0) [0|15] "" XXX
- SG_ SET_3 : 23|2@0+ (1,0) [0|3] "" XXX
+ SG_ RAB_Customization : 14|1@1+ (1,0) [0|1] "" XXX
+ SG_ Sonar_Customization : 13|1@1+ (1,0) [0|1] "" XXX
+ SG_ Auto_Brake_Customization : 12|1@1+ (1,0) [0|1] "" XXX
+ SG_ RAB_Off : 16|1@1+ (1,0) [0|1] "" XXX
+ SG_ Sonar_Off : 17|1@1+ (1,0) [0|1] "" XXX
+ SG_ Sonar_System_Halt : 18|1@1+ (1,0) [0|1] "" XXX
+ SG_ Sonar_System_Fail : 20|1@1+ (1,0) [0|1] "" XXX
+ SG_ RAB_Available : 22|1@1+ (1,0) [0|1] "" XXX
+ SG_ Sonar_Available : 23|1@1+ (1,0) [0|1] "" XXX
+ SG_ Sonar_Warn_Left : 24|2@1+ (1,0) [0|3] "" XXX
+ SG_ Sonar_Warn_Right : 26|2@1+ (1,0) [0|3] "" XXX
+ SG_ Sonar_Warn_Center : 32|3@1+ (1,0) [0|7] "" XXX
+ SG_ RAB_Warn_State : 38|2@1+ (1,0) [0|3] "" XXX
 
 BO_ 289 ES_STATIC_2: 8 XXX
  SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX

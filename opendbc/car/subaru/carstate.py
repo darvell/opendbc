@@ -11,6 +11,10 @@ from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarState
 
 
 class CarState(CarStateBase, MadsCarState, SnGCarState):
+  BSM_STALE_FRAMES = 20
+  BSM_APPROACHING_HOLD_FRAMES = 100
+  SONAR_STALE_FRAMES = 20
+
   def __init__(self, CP, CP_SP):
     CarStateBase.__init__(self, CP, CP_SP)
     MadsCarState.__init__(self, CP, CP_SP)
@@ -19,6 +23,60 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     self.shifter_values = can_define.dv["Transmission"]["Gear"]
 
     self.angle_rate_calulator = CanSignalRateCalculator(50)
+    self.bsm_stale_frames = self.BSM_STALE_FRAMES + 1
+    self.left_approaching_hold_frames = 0
+    self.right_approaching_hold_frames = 0
+    self.sonar_stale_frames = self.SONAR_STALE_FRAMES + 1
+
+  @staticmethod
+  def _feature_state(available, disabled):
+    # Matches the stock camera's state mapping recovered from cs_eyesight.c.
+    return 1 if available else (3 if disabled else 2)
+
+  def update_subaru_surroundings(self, cp, cp_cam, ret, ret_sp):
+    if self.CP.enableBsm:
+      bsm = cp.vl["BSD_RCTA"]
+      bsm_updated = len(cp.vl_all["BSD_RCTA"]["L_ADJACENT"]) > 0
+      self.bsm_stale_frames = 0 if bsm_updated else self.bsm_stale_frames + 1
+
+      left_adjacent = bsm["L_ADJACENT"] == 1
+      left_approaching = bsm["L_APPROACHING"] == 1
+      right_adjacent = bsm["R_ADJACENT"] == 1
+      right_approaching = bsm["R_APPROACHING"] == 1
+
+      self.left_approaching_hold_frames = self.BSM_APPROACHING_HOLD_FRAMES if left_approaching else \
+        max(0, self.left_approaching_hold_frames - 1)
+      self.right_approaching_hold_frames = self.BSM_APPROACHING_HOLD_FRAMES if right_approaching else \
+        max(0, self.right_approaching_hold_frames - 1)
+
+      ret_sp.blindSpotLeftAdjacent = left_adjacent
+      ret_sp.blindSpotLeftApproaching = left_approaching
+      ret_sp.blindSpotRightAdjacent = right_adjacent
+      ret_sp.blindSpotRightApproaching = right_approaching
+      ret_sp.blindSpotMonitorValid = self.bsm_stale_frames <= self.BSM_STALE_FRAMES
+
+      # Treat stale BSM data as occupied. Positive detection is a veto; missing data is never permission.
+      ret.leftBlindspot = left_adjacent or left_approaching or self.left_approaching_hold_frames > 0 or not ret_sp.blindSpotMonitorValid
+      ret.rightBlindspot = right_adjacent or right_approaching or self.right_approaching_hold_frames > 0 or not ret_sp.blindSpotMonitorValid
+
+    if self.CP.flags & SubaruFlags.PREGLOBAL:
+      return
+
+    sonar = cp_cam.vl["ES_STATIC_1"]
+    sonar_updated = len(cp_cam.vl_all["ES_STATIC_1"]["Sonar_Warn_Left"]) > 0
+    self.sonar_stale_frames = 0 if sonar_updated else self.sonar_stale_frames + 1
+
+    ret_sp.rearSonarAvailable = bool(sonar["Sonar_Available"] and not sonar["Sonar_Off"])
+    ret_sp.rearSonarValid = bool(ret_sp.rearSonarAvailable and self.sonar_stale_frames <= self.SONAR_STALE_FRAMES and
+                                 not sonar["Sonar_System_Halt"] and not sonar["Sonar_System_Fail"])
+    ret_sp.rearSonarLeft = int(sonar["Sonar_Warn_Left"])
+    ret_sp.rearSonarCenter = int(sonar["Sonar_Warn_Center"] if sonar["Sonar_Warn_Center"] < 5 else 0)
+    ret_sp.rearSonarRight = int(sonar["Sonar_Warn_Right"])
+    ret_sp.rearSonarSystemHalted = bool(sonar["Sonar_System_Halt"])
+    ret_sp.rearSonarSystemFaulted = bool(sonar["Sonar_System_Fail"])
+    ret_sp.rearAutomaticBrakingAvailable = bool(sonar["RAB_Available"] and not sonar["RAB_Off"])
+    ret_sp.rearAutomaticBrakingState = self._feature_state(sonar["RAB_Available"], sonar["RAB_Off"])
+    ret_sp.rearAutomaticBrakingAlert = int(sonar["RAB_Warn_State"] if sonar["RAB_Warn_State"] < 3 else 0)
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -58,9 +116,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(50, cp.vl["Dashlights"]["LEFT_BLINKER"],
                                                                       cp.vl["Dashlights"]["RIGHT_BLINKER"])
 
-    if self.CP.enableBsm:
-      ret.leftBlindspot = (cp.vl["BSD_RCTA"]["L_ADJACENT"] == 1) or (cp.vl["BSD_RCTA"]["L_APPROACHING"] == 1)
-      ret.rightBlindspot = (cp.vl["BSD_RCTA"]["R_ADJACENT"] == 1) or (cp.vl["BSD_RCTA"]["R_APPROACHING"] == 1)
+    self.update_subaru_surroundings(cp, cp_cam, ret, ret_sp)
 
     cp_transmission = cp_alt if self.CP.flags & SubaruFlags.HYBRID else cp
     can_gear = int(cp_transmission.vl["Transmission"]["Gear"])
