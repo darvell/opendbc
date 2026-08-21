@@ -31,6 +31,7 @@ class SnGCarController:
     self.last_standstill_frame = 0
     self.epb_resume_frames_remaining = -1
     self.prev_close_distance = 0.0
+    self.prev_resume_request = False
 
   def update_epb_resume_sequence(self, should_resume: bool) -> bool:
     if self.manual_parking_brake:
@@ -58,7 +59,17 @@ class SnGCarController:
         bool: True if resume command should be sent, False otherwise
     """
 
-    if not CC.enabled or not CC.hudControl.leadVisible:
+    resume_request = bool(getattr(getattr(CC, "cruiseControl", None), "resume", False))
+    resume_edge = resume_request and not self.prev_resume_request
+    self.prev_resume_request = resume_request
+
+    if not CC.enabled:
+      return False
+
+    # A planner resume request is authoritative even when the lead detector
+    # briefly drops out while the car is held by EPB/Auto Hold. The distance
+    # trigger remains as a fallback for stock ACC behavior.
+    if not CC.hudControl.leadVisible and not resume_edge:
       return False
 
     close_distance = CS.es_distance_msg["Close_Distance"]
@@ -83,8 +94,9 @@ class SnGCarController:
       # Manual parking brake: Direct resume when the standstill hold threshold is reached to prevent ACC fault
       send_resume = in_standstill_hold
     else:
-      # EPB: Resume sequence with trigger on distance with lead car increasing
-      should_resume = CS.out.standstill and distance_resume_allowed
+      # EPB: prefer the explicit planner resume edge, with the distance trigger
+      # retained for stock ACC sequences that do not expose it.
+      should_resume = resume_edge or (CS.out.standstill and distance_resume_allowed)
       send_resume = self.update_epb_resume_sequence(should_resume)
 
     self.prev_close_distance = close_distance
@@ -99,10 +111,14 @@ class SnGCarController:
 
     send_resume = self.update_stop_and_go(CC, CS, frame)
 
-    can_sends.append(subarucan_ext.create_throttle(packer, self.CP, CS.throttle_msg, send_resume and not self.manual_parking_brake))
+    # These camera-side frames are a heartbeat while the stock camera bus is
+    # intercepted. Only the pedal/speed field changes during the resume pulse.
+    can_sends.append(subarucan_ext.create_throttle(packer, self.CP, CS.throttle_msg,
+                                                    send_resume and not self.manual_parking_brake))
 
     if frame % 2 == 0:
-      can_sends.append(subarucan_ext.create_brake_pedal(packer, self.CP, CS.brake_pedal_msg, send_resume and self.manual_parking_brake))
+      can_sends.append(subarucan_ext.create_brake_pedal(packer, self.CP, CS.brake_pedal_msg,
+                                                        send_resume and self.manual_parking_brake))
 
     return can_sends
 

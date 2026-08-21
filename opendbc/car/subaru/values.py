@@ -16,6 +16,7 @@ AVERAGE_ROAD_ROLL = 0.06
 
 class CarControllerParams:
   # The EPS faults above roughly 200 degrees while LKAS is actively requesting steering.
+  ACTIVE_ANGLE_MAX = 190
   ANGLE_LIMITS: AngleSteeringLimitsVM = AngleSteeringLimitsVM(
     STEER_ANGLE_MAX=190,
     MAX_LATERAL_ACCEL=ISO_LATERAL_ACCEL + (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL),

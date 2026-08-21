@@ -45,4 +45,7 @@ class MadsCarState(MadsCarStateBase):
     if not self.CP.flags & SubaruFlags.PREGLOBAL:
       self.lkas_button = cp_cam.vl["ES_LKAS_State"]["LKAS_Dash_State"]
 
-    ret.buttonEvents = self.create_lkas_button_events(self.lkas_button, self.prev_lkas_button, {1: ButtonType.lkas})
+    button_events = [event.to_dict() for event in ret.buttonEvents]
+    lkas_events = self.create_lkas_button_events(self.lkas_button, self.prev_lkas_button, {1: ButtonType.lkas})
+    button_events += [event.to_dict() for event in lkas_events]
+    ret.buttonEvents = button_events

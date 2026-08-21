@@ -21,6 +21,7 @@
   }
 
 #define MSG_SUBARU_Brake_Status          0x13cU
+#define MSG_SUBARU_Cruise_Buttons        0x146U
 #define MSG_SUBARU_CruiseControl         0x240U
 #define MSG_SUBARU_Throttle              0x40U
 #define MSG_SUBARU_Steering_Torque       0x119U
@@ -86,9 +87,20 @@
   {.msg = {{MSG_SUBARU_Steering_2,      SUBARU_MAIN_BUS, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_ES_LKAS_State,   SUBARU_CAM_BUS,  8, 10U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
+#define SUBARU_LKAS_ANGLE_LONG_RX_CHECKS(alt_bus)                                                                                               \
+  {.msg = {{MSG_SUBARU_Throttle,        SUBARU_MAIN_BUS, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}}, \
+  {.msg = {{MSG_SUBARU_Steering_Torque, SUBARU_MAIN_BUS, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+  {.msg = {{MSG_SUBARU_Wheel_Speeds,    alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+  {.msg = {{MSG_SUBARU_Brake_Status,    alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+  {.msg = {{MSG_SUBARU_CruiseControl,   alt_bus,         8, 20U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+  {.msg = {{MSG_SUBARU_Cruise_Buttons,  alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+  {.msg = {{MSG_SUBARU_Steering_2,      SUBARU_MAIN_BUS, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+
 static bool subaru_gen2 = false;
 static bool subaru_lkas_angle = false;
 static bool subaru_longitudinal = false;
+static bool subaru_set_button_prev = false;
+static bool subaru_resume_button_prev = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -130,15 +142,41 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // enter controls on rising edge of ACC, exit controls on ACC off
-  if (subaru_lkas_angle && (msg->addr == MSG_SUBARU_ES_Status) && (msg->bus == alt_main_bus)) {
+  // Stock longitudinal enters controls from the stock ACC state. Alpha long
+  // silences EyeSight, so it enters on the physical Set/Resume falling edge
+  // and uses the ECM's independent main/engaged state for immediate exits.
+  if (subaru_lkas_angle && !subaru_longitudinal && (msg->addr == MSG_SUBARU_ES_Status) && (msg->bus == alt_main_bus)) {
     bool cruise_engaged = (msg->data[3] >> 5) & 1U;
     pcm_cruise_check(cruise_engaged);
   }
-  if (!subaru_lkas_angle && (msg->addr == MSG_SUBARU_CruiseControl) && (msg->bus == alt_main_bus)) {
-    bool cruise_engaged = (msg->data[5] >> 1) & 1U;
-    pcm_cruise_check(cruise_engaged);
+  if ((msg->addr == MSG_SUBARU_CruiseControl) && (msg->bus == alt_main_bus)) {
+    bool cruise_engaged = GET_BIT(msg, 41U);
     acc_main_on = GET_BIT(msg, 40U);
+
+    if (subaru_longitudinal) {
+      if (!acc_main_on || (cruise_engaged_prev && !cruise_engaged)) {
+        controls_allowed = false;
+      }
+      cruise_engaged_prev = cruise_engaged;
+    } else if (!subaru_lkas_angle) {
+      pcm_cruise_check(cruise_engaged);
+    } else {
+    }
+  }
+  if (subaru_longitudinal && (msg->addr == MSG_SUBARU_Cruise_Buttons) && (msg->bus == alt_main_bus)) {
+    bool main_button = GET_BIT(msg, 42U);
+    bool set_button = GET_BIT(msg, 43U);
+    bool resume_button = GET_BIT(msg, 44U);
+
+    if ((subaru_set_button_prev && !set_button) || (subaru_resume_button_prev && !resume_button)) {
+      controls_allowed = acc_main_on;
+    }
+    if (main_button) {
+      controls_allowed = false;
+    }
+
+    subaru_set_button_prev = set_button;
+    subaru_resume_button_prev = resume_button;
   }
 
   // update vehicle moving with any non-zero wheel speed
@@ -158,7 +196,12 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
   }
 
   if ((msg->addr == MSG_SUBARU_Throttle) && (msg->bus == SUBARU_MAIN_BUS)) {
+    subaru_stop_and_go_throttle_pedal = msg->data[4];
     gas_pressed = msg->data[4] != 0U;
+  }
+
+  if ((msg->addr == MSG_SUBARU_Brake_Pedal) && (msg->bus == SUBARU_MAIN_BUS)) {
+    subaru_stop_and_go_brake_pedal_speed = GET_BYTES(msg, 2, 2) & 0xFFFU;
   }
 }
 
@@ -178,11 +221,11 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
   };
   const int SUBARU_ACTIVE_ANGLE_MAX = 190 * 100;
 
-  // Match the Ascent vehicle model used by the Python controller.
+  // Match the validated Gen3 Crosstrek vehicle model used by the Python controller.
   const AngleSteeringParams SUBARU_ANGLE_STEERING_PARAMS = {
-    .slip_factor = -0.000580374471400815,
-    .steer_ratio = 13.5,
-    .wheelbase = 2.890000104904175,
+    .slip_factor = -0.0006281955319491566,
+    .steer_ratio = 17.0,
+    .wheelbase = 2.6700000762939453,
   };
 
   const struct lookup_t SUBARU_MAX_GAS = {
@@ -227,6 +270,16 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     if (lkas_request) {
       violation |= safety_max_limit_check(desired_angle, SUBARU_ACTIVE_ANGLE_MAX, -SUBARU_ACTIVE_ANGLE_MAX);
     }
+  }
+
+  if ((msg->addr == MSG_SUBARU_Throttle) && (msg->bus == SUBARU_CAM_BUS)) {
+    const int throttle_pedal = msg->data[4];
+    violation |= subaru_common_stop_and_go_throttle_check(throttle_pedal);
+  }
+
+  if ((msg->addr == MSG_SUBARU_Brake_Pedal) && (msg->bus == SUBARU_CAM_BUS)) {
+    const int brake_pedal_speed = GET_BYTES(msg, 2, 2) & 0xFFFU;
+    violation |= subaru_common_stop_and_go_brake_pedal_check(brake_pedal_speed, false);
   }
 
   if (msg->addr == MSG_SUBARU_ES_Brake) {
@@ -289,6 +342,12 @@ static safety_config subaru_init(uint16_t param) {
     SUBARU_GEN2_LONG_ADDITIONAL_TX_MSGS()
   };
 
+  static const CanMsg SUBARU_LKAS_ANGLE_GEN2_SNG_TX_MSGS[] = {
+    SUBARU_BASE_TX_MSGS(SUBARU_ALT_BUS, MSG_SUBARU_ES_LKAS_ANGLE)
+    SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
+    SUBARU_STOP_AND_GO_TX_MSGS
+  };
+
   static const CanMsg subaru_stop_and_go_tx_msgs[] = {
     SUBARU_BASE_TX_MSGS(SUBARU_MAIN_BUS, MSG_SUBARU_ES_LKAS)
     SUBARU_COMMON_TX_MSGS(SUBARU_MAIN_BUS)
@@ -298,13 +357,16 @@ static safety_config subaru_init(uint16_t param) {
   const uint16_t SUBARU_PARAM_GEN2 = 1;
   const uint16_t SUBARU_PARAM_LKAS_ANGLE = 8;
 
+  const uint16_t SUBARU_PARAM_LONGITUDINAL = 2;
+
   subaru_gen2 = GET_FLAG(param, SUBARU_PARAM_GEN2);
   subaru_lkas_angle = GET_FLAG(param, SUBARU_PARAM_LKAS_ANGLE);
-  subaru_longitudinal = false;
-#ifdef ALLOW_DEBUG
-  const uint16_t SUBARU_PARAM_LONGITUDINAL = 2;
+  // This fork only sets LONG for the explicitly selected Gen3 Crosstrek port.
+  // Keep the release Panda's safety mode consistent with CarParams so the
+  // validated 0x220/0x221/0x222 checks are active on the real device.
   subaru_longitudinal = GET_FLAG(param, SUBARU_PARAM_LONGITUDINAL);
-#endif
+  subaru_set_button_prev = false;
+  subaru_resume_button_prev = false;
 
   subaru_common_init();
 
@@ -315,8 +377,12 @@ static safety_config subaru_init(uint16_t param) {
       static RxCheck subaru_lkas_angle_gen2_rx_checks[] = {
         SUBARU_LKAS_ANGLE_RX_CHECKS(SUBARU_ALT_BUS)
       };
-      ret = subaru_longitudinal ? BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_LONG_TX_MSGS) : \
-                                  BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_TX_MSGS);
+      static RxCheck subaru_lkas_angle_gen2_long_rx_checks[] = {
+        SUBARU_LKAS_ANGLE_LONG_RX_CHECKS(SUBARU_ALT_BUS)
+      };
+      ret = subaru_longitudinal ? BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_long_rx_checks, SUBARU_LKAS_ANGLE_GEN2_LONG_TX_MSGS) : \
+                                  (subaru_stop_and_go ? BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_SNG_TX_MSGS) : \
+                                                        BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_TX_MSGS));
     } else {
       static RxCheck subaru_lkas_angle_rx_checks[] = {
         SUBARU_LKAS_ANGLE_RX_CHECKS(SUBARU_MAIN_BUS)

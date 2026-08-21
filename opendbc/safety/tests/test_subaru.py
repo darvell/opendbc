@@ -15,8 +15,10 @@ from functools import partial
 
 class SubaruMsg(enum.IntEnum):
   Brake_Status      = 0x13c
+  Cruise_Buttons    = 0x146
   CruiseControl     = 0x240
   Throttle          = 0x40
+  Brake_Pedal       = 0x139
   Steering_Torque   = 0x119
   Steering_2        = 0x11a
   Wheel_Speeds      = 0x13a
@@ -59,8 +61,12 @@ def gen2_long_additional_tx_msgs():
           [SubaruMsg.ES_STATIC_2, SUBARU_MAIN_BUS]]
 
 
-def fwd_blacklisted_addr(lkas_msg=SubaruMsg.ES_LKAS):
-  return {SUBARU_CAM_BUS: [lkas_msg, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State, SubaruMsg.ES_Infotainment]}
+def fwd_blacklisted_addr(lkas_msg=SubaruMsg.ES_LKAS, stop_and_go=False):
+  camera_addrs = [lkas_msg, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State, SubaruMsg.ES_Infotainment]
+  blacklisted = {SUBARU_CAM_BUS: camera_addrs}
+  if stop_and_go:
+    blacklisted[SUBARU_MAIN_BUS] = [SubaruMsg.Throttle, SubaruMsg.Brake_Pedal]
+  return blacklisted
 
 
 class TestSubaruSafetyBase(common.CarSafetyTest):
@@ -373,6 +379,57 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
     SUBARU_ALT_BUS: (SubaruMsg.ES_Brake, SubaruMsg.ES_Distance, SubaruMsg.ES_Status),
   }
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE)
+
+  def _cruise_control_msg(self, main, engaged=False):
+    values = {"Cruise_On": main, "Cruise_Activated": engaged}
+    return self.packer.make_can_msg_safety("CruiseControl", SUBARU_ALT_BUS, values)
+
+  def _cruise_buttons_msg(self, main=False, _set=False, resume=False):
+    values = {"Main": main, "Set": _set, "Resume": resume}
+    return self.packer.make_can_msg_safety("Cruise_Buttons", SUBARU_ALT_BUS, values)
+
+  # Stock EyeSight's cruise state is bypassed under openpilot longitudinal control.
+  def test_disable_control_allowed_from_cruise(self):
+    pass
+
+  def test_enable_control_allowed_from_cruise(self):
+    pass
+
+  def test_cruise_engaged_prev(self):
+    pass
+
+  # EyeSight is silent in alpha long, so its LKAS HUD button is unavailable.
+  def test_enable_control_allowed_with_mads_button(self):
+    pass
+
+  def test_engage_with_brake_pressed(self):
+    pass
+
+  def test_set_and_resume_buttons(self):
+    for button in ("set", "resume"):
+      self.safety.set_controls_allowed(False)
+      self._rx(self._cruise_control_msg(False))
+      self._rx(self._cruise_buttons_msg(_set=button == "set", resume=button == "resume"))
+      self._rx(self._cruise_buttons_msg())
+      self.assertFalse(self.safety.get_controls_allowed(), f"controls allowed on {button} with main off")
+
+      self._rx(self._cruise_control_msg(True))
+      self._rx(self._cruise_buttons_msg(_set=button == "set", resume=button == "resume"))
+      self.assertFalse(self.safety.get_controls_allowed(), f"controls allowed on {button} rising edge")
+      self._rx(self._cruise_buttons_msg())
+      self.assertTrue(self.safety.get_controls_allowed(), f"controls not allowed on {button} falling edge")
+
+  def test_main_switch_off_disables(self):
+    self._rx(self._cruise_control_msg(True))
+    self.safety.set_controls_allowed(True)
+    self._rx(self._cruise_control_msg(False))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_ecm_cruise_disengage_disables(self):
+    self._rx(self._cruise_control_msg(True, engaged=True))
+    self.safety.set_controls_allowed(True)
+    self._rx(self._cruise_control_msg(True, engaged=False))
+    self.assertFalse(self.safety.get_controls_allowed())
 
 
 if __name__ == "__main__":

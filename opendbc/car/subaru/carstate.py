@@ -1,6 +1,6 @@
 import copy
 from opendbc.can import CANDefine, CANParser
-from opendbc.car import Bus, structs
+from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.subaru.values import DBC, CanBus, SubaruFlags
@@ -8,6 +8,13 @@ from opendbc.car import CanSignalRateCalculator
 
 from opendbc.sunnypilot.car.subaru.mads import MadsCarState
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarState
+
+ButtonType = structs.CarState.ButtonEvent.Type
+CRUISE_BUTTONS = {
+  "Set": ButtonType.decelCruise,
+  "Resume": ButtonType.accelCruise,
+  "Main": ButtonType.mainCruise,
+}
 
 
 class CarState(CarStateBase, MadsCarState, SnGCarState):
@@ -27,11 +34,27 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     self.left_approaching_hold_frames = 0
     self.right_approaching_hold_frames = 0
     self.sonar_stale_frames = self.SONAR_STALE_FRAMES + 1
+    self.cruise_button_states = {signal: False for signal in CRUISE_BUTTONS}
 
   @staticmethod
   def _feature_state(available, disabled):
     # Matches the stock camera's state mapping recovered from cs_eyesight.c.
     return 1 if available else (3 if disabled else 2)
+
+  def update_alpha_long_cruise_state(self, cp_alt, ret):
+    # EyeSight is disabled in alpha long. The ECM-side CruiseControl message
+    # still reports the physical main switch, while engagement is owned by
+    # selfdrive and must not be inferred from our own emulated ES_Status.
+    ret.cruiseState.enabled = False
+    ret.cruiseState.available = cp_alt.vl["CruiseControl"]["Cruise_On"] != 0
+
+    cruise_buttons = cp_alt.vl["Cruise_Buttons"]
+    button_events = []
+    for signal, button_type in CRUISE_BUTTONS.items():
+      current = bool(cruise_buttons[signal])
+      button_events += create_button_events(int(current), int(self.cruise_button_states[signal]), {1: button_type})
+      self.cruise_button_states[signal] = current
+    ret.buttonEvents = button_events
 
   def update_subaru_surroundings(self, cp, cp_cam, ret, ret_sp):
     if self.CP.enableBsm:
@@ -148,9 +171,12 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     cp_es_brake = cp_alt if self.CP.flags & SubaruFlags.GLOBAL_GEN2 else cp_cam
 
     if self.CP.flags & SubaruFlags.LKAS_ANGLE:
-      # ES_Brake remains high when braking at a stop; ES_Status tracks the actual ACC engagement state.
-      ret.cruiseState.enabled = cp_es_brake.vl["ES_Status"]['Cruise_Activated'] != 0
-      ret.cruiseState.available = cp_cam.vl["ES_DashStatus"]['Cruise_On'] != 0
+      if self.CP.openpilotLongitudinalControl:
+        self.update_alpha_long_cruise_state(cp_alt, ret)
+      else:
+        # ES_Brake remains high when braking at a stop; ES_Status tracks the actual ACC engagement state.
+        ret.cruiseState.enabled = cp_es_brake.vl["ES_Status"]['Cruise_Activated'] != 0
+        ret.cruiseState.available = cp_cam.vl["ES_DashStatus"]['Cruise_On'] != 0
     elif self.CP.flags & SubaruFlags.HYBRID:
       ret.cruiseState.enabled = cp_es_brake.vl["ES_Brake"]['Cruise_Activated'] != 0
       ret.cruiseState.available = cp_cam.vl["ES_DashStatus"]['Cruise_On'] != 0

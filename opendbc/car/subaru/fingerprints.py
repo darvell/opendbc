@@ -253,19 +253,24 @@ FW_VERSIONS = {
       b'\xf4!`0\x07',
     ],
   },
-  # Validated on a 2025 Crosstrek. 2024 uses the same platform but still needs its FW responses captured.
+  # Validated on 2024 and 2025 Crosstreks. Both model years use this platform.
   CAR.SUBARU_CROSSTREK_2025: {
     (Ecu.abs, 0x7b0, None): [
+      b'\xa2 $\x15\x04',
       b'\xa2 $\x15\x05',
       b'\xa2 $\x17\x06',
     ],
     (Ecu.fwdCamera, 0x787, None): [
+      b'\x0a!\x08\x036\x00\x00\x00\x00\x00',
       b'\x1d!\x08\x00F\x14!\x08\x00=',
       b'\x1b!\x08\x00D\x11!\x08\x01;',
     ],
     (Ecu.engine, 0x7a2, None): [
       b'\x04"cP\x07',
       b'\xe8!cp\x07',
+    ],
+    (Ecu.transmission, 0x7a3, None): [
+      b'@\x114CP',
     ],
   },
   CAR.SUBARU_FORESTER: {

@@ -95,6 +95,11 @@ class CarInterface(CarInterfaceBase):
     # Experimental and data-derived for the Gen3 Crosstrek only. Other Subaru platforms stay disabled.
     ret.alphaLongitudinalAvailable = candidate == CAR.SUBARU_CROSSTREK_2025
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
+    # EyeSight is silenced for alpha long, so its engagement state and set speed
+    # cannot remain the source of truth. Use openpilot's button-driven cruise state.
+    ret.pcmCruise = not ret.openpilotLongitudinalControl
+    if ret.openpilotLongitudinalControl:
+      ret.autoResumeSng = True
 
     if ret.flags & SubaruFlags.GLOBAL_GEN2 and ret.openpilotLongitudinalControl:
       ret.flags |= SubaruFlags.DISABLE_EYESIGHT.value
@@ -110,6 +115,9 @@ class CarInterface(CarInterfaceBase):
     stock_cp.dashcamOnly = bool(stock_cp.flags & SubaruFlags.HYBRID)
     if stock_cp.flags & SubaruFlags.LKAS_ANGLE and candidate != CAR.SUBARU_CROSSTREK_2025:
       stock_cp.dashcamOnly = True
+
+    # Alpha long owns the requested speed after EyeSight is disabled.
+    ret.pcmCruiseSpeed = not stock_cp.openpilotLongitudinalControl
 
     if not stock_cp.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID):
       stock_cp.autoResumeSng = True

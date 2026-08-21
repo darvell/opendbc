@@ -13,7 +13,7 @@ from collections.abc import Callable
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanRecvCallable, CanSendCallable
 from opendbc.car.hyundai.values import HyundaiFlags
-from opendbc.car.subaru.values import SubaruFlags
+from opendbc.car.subaru.values import CAR as SUBARU, SubaruFlags
 from opendbc.car.toyota.values import ToyotaSafetyFlags
 from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_tracks as hyundai_enable_radar_tracks
 from opendbc.sunnypilot.car.hyundai.longitudinal.helpers import LongitudinalTuningType
@@ -141,16 +141,26 @@ def _initialize_radar_tracks(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
 
 
 def _initialize_stop_and_go(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_dict: dict[str, str]) -> None:
-  if CP.brand == 'subaru' and not CP.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID):
-    stop_and_go = int(params_dict.get("SubaruStopAndGo", 0)) == 1
-    stop_and_go_manual_parking_brake = int(params_dict.get("SubaruStopAndGoManualParkingBrake", 0)) == 1
+  # Stock EyeSight stop-and-go and alpha longitudinal are alternative control
+  # paths. Do not inject camera-side resume frames while alpha longitudinal is
+  # controlling the same vehicle.
+  if CP.brand != 'subaru' or CP.openpilotLongitudinalControl:
+    return
 
-    if stop_and_go:
-      CP_SP.flags |= SubaruFlagsSP.STOP_AND_GO.value
-    if stop_and_go_manual_parking_brake:
-      CP_SP.flags |= SubaruFlagsSP.STOP_AND_GO_MANUAL_PARKING_BRAKE.value
-    if stop_and_go or stop_and_go_manual_parking_brake:
-      CP_SP.safetyParam |= SubaruSafetyFlagsSP.STOP_AND_GO
+  supported = not CP.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID) or CP.carFingerprint == SUBARU.SUBARU_CROSSTREK_2025
+  if not supported:
+    return
+
+  stop_and_go = int(params_dict.get("SubaruStopAndGo", 0)) == 1
+  stop_and_go_manual_parking_brake = int(params_dict.get("SubaruStopAndGoManualParkingBrake", 0)) == 1
+
+  if stop_and_go:
+    CP_SP.flags |= SubaruFlagsSP.STOP_AND_GO.value
+  if stop_and_go_manual_parking_brake:
+    CP_SP.flags |= SubaruFlagsSP.STOP_AND_GO_MANUAL_PARKING_BRAKE.value
+  if stop_and_go or stop_and_go_manual_parking_brake:
+    CP.autoResumeSng = True
+    CP_SP.safetyParam |= SubaruSafetyFlagsSP.STOP_AND_GO
 
 
 def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_dict: dict[str, str]) -> None:

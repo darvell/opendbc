@@ -4,7 +4,7 @@ from opendbc.car import Bus, make_tester_present_msg
 from opendbc.car.lateral import apply_center_deadzone, apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.subaru import subarucan
-from opendbc.car.subaru.values import DBC, GLOBAL_ES_ADDR, CanBus, CarControllerParams, SubaruFlags
+from opendbc.car.subaru.values import CAR, DBC, GLOBAL_ES_ADDR, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
 
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
@@ -16,9 +16,9 @@ MAX_STEER_RATE_FRAMES = 7  # tx control frames needed before torque can be cut
 
 
 def get_safety_CP():
-  # Use the Ascent for lateral limiting to match panda safety's most restrictive Subaru model.
+  # Only the validated Gen3 Crosstrek angle platform is control-enabled.
   from opendbc.car.subaru.interface import CarInterface
-  return CarInterface.get_non_essential_params("SUBARU_ASCENT")
+  return CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
 
 
 class CarController(CarControllerBase, SnGCarController):
@@ -36,7 +36,7 @@ class CarController(CarControllerBase, SnGCarController):
     self.packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
 
     if CP.flags & SubaruFlags.LKAS_ANGLE:
-      self.VM = VehicleModel(get_safety_CP())
+      self.VM = VehicleModel(CP)
 
   def lateral_angle(self, CC, CS):
     abs_torque = abs(CS.out.steeringTorque)
@@ -45,7 +45,16 @@ class CarController(CarControllerBase, SnGCarController):
     elif abs_torque < self.p.STEER_OVERRIDE_TORQUE_LOW:
       self.driver_override = False
 
-    lat_active = CC.latActive and not self.driver_override
+    # Subaru angle LKAS cannot accept MADS-only requests while selfdrive is disabled.
+    # Panda rejects those requests, which creates a gap in the required 50 Hz angle stream
+    # and causes the EPS to latch a permanent fault.
+    lat_active = CC.enabled and CC.latActive and not self.driver_override
+    # Do not keep LKAS_Request asserted while the wheel is already beyond the
+    # active-angle ceiling. The EPS can latch a permanent fault even when the
+    # requested angle itself is clamped to the ceiling.
+    if lat_active and abs(CS.out.steeringAngleDeg) >= self.p.ACTIVE_ANGLE_MAX:
+      lat_active = False
+
     if lat_active:
       apply_angle = CC.actuators.steeringAngleDeg
       # Suppress low-speed hunting caused by coarse angle sensing/EPS actuation.
