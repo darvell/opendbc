@@ -205,6 +205,7 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
     carstate = CarState.__new__(CarState)
     carstate.cruise_button_states = {"Set": False, "Resume": False, "Main": False}
     ret = structs.CarState()
+    ret.cruiseState.standstill = True
     cp_alt = SimpleNamespace(vl={
       "CruiseControl": {"Cruise_On": 1},
       "Cruise_Buttons": {"Set": 1, "Resume": 0, "Main": 0},
@@ -214,6 +215,7 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
 
     self.assertTrue(ret.cruiseState.available)
     self.assertFalse(ret.cruiseState.enabled)
+    self.assertFalse(ret.cruiseState.standstill)
     self.assertEqual(len(ret.buttonEvents), 1)
     self.assertTrue(ret.buttonEvents[0].pressed)
     self.assertEqual(ret.buttonEvents[0].type, structs.CarState.ButtonEvent.Type.decelCruise)

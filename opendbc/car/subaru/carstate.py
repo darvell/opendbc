@@ -47,6 +47,9 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     # selfdrive and must not be inferred from our own emulated ES_Status.
     ret.cruiseState.enabled = False
     ret.cruiseState.available = cp_alt.vl["CruiseControl"]["Cruise_On"] != 0
+    # Direct longitudinal actuation can restart without a stock ACC resume command.
+    # A stale EyeSight standstill bit would otherwise trap longcontrol in its stopping state.
+    ret.cruiseState.standstill = False
 
     cruise_buttons = cp_alt.vl["Cruise_Buttons"]
     button_events = []
@@ -201,19 +204,22 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
       self.ready = not cp_cam.vl["ES_DashStatus"]["Not_Ready_Startup"]
     else:
       ret.steerFaultTemporary = cp.vl["Steering_Torque"]["Steer_Warning"] == 1
-      ret.cruiseState.nonAdaptive = cp_cam.vl["ES_DashStatus"]["Conventional_Cruise"] == 1
-      ret.cruiseState.standstill = cp_cam.vl["ES_DashStatus"]["Cruise_State"] == 3
-      ret.stockFcw = (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 1) or \
-                     (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 2)
+      if not self.CP.openpilotLongitudinalControl:
+        ret.cruiseState.nonAdaptive = cp_cam.vl["ES_DashStatus"]["Conventional_Cruise"] == 1
+        ret.cruiseState.standstill = cp_cam.vl["ES_DashStatus"]["Cruise_State"] == 3
+        ret.stockFcw = (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 1) or \
+                       (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 2)
 
       self.es_lkas_state_msg = copy.copy(cp_cam.vl["ES_LKAS_State"])
       self.es_brake_msg = copy.copy(cp_es_brake.vl["ES_Brake"])
 
       # TODO: Hybrid cars don't have ES_Distance, need a replacement
       if not (self.CP.flags & SubaruFlags.HYBRID):
-        # 8 is known AEB, there are a few other values related to AEB we ignore
-        ret.stockAeb = (cp_es_distance.vl["ES_Brake"]["AEB_Status"] == 8) and \
-                       (cp_es_distance.vl["ES_Brake"]["Brake_Pressure"] != 0)
+        # EyeSight is silent in alpha long, so its final AEB state must not remain latched in CarState.
+        if not self.CP.openpilotLongitudinalControl:
+          # 8 is known AEB, there are a few other values related to AEB we ignore
+          ret.stockAeb = (cp_es_distance.vl["ES_Brake"]["AEB_Status"] == 8) and \
+                         (cp_es_distance.vl["ES_Brake"]["Brake_Pressure"] != 0)
 
         self.es_status_msg = copy.copy(cp_es_brake.vl["ES_Status"])
         self.cruise_control_msg = copy.copy(cp_cruise.vl["CruiseControl"])
