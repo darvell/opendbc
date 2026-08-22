@@ -58,6 +58,11 @@ class CarControllerParams:
   BRAKE_RPM_V = [300., 1030., 1050., 1100., 1235., 1350., 1500.]
   BRAKE_MAX_V = [400., 350., 320., 300., 290., 295., 315.]
 
+  # Stock EyeSight coasts through light deceleration before applying the brakes.
+  # These thresholds are the approximate future-acceleration points where the
+  # observed brake command becomes dominant in the validation route.
+  BRAKE_START_ACCEL_V = [-0.05, -0.25, -0.35, -0.40, -0.50, -0.60, -0.60]
+
   THROTTLE_MIN = 808
   THROTTLE_MAX = 3900
   THROTTLE_INACTIVE = 1818
@@ -95,6 +100,9 @@ class SubaruFlags(IntFlag):
 
 GLOBAL_ES_ADDR = 0x787
 GEN2_ES_BUTTONS_DID = b'\x11\x30'
+# Set true only after the EyeSight button DID is decoded and engagement is
+# verified against the Gen3 Crosstrek's real steering-wheel controls.
+GEN3_LONGITUDINAL_READY = False
 
 
 class CanBus:

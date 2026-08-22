@@ -47,7 +47,9 @@ BO_ 546 ES_Status: 8 XXX
 BO_ 576 CruiseControl: 8 XXX
  SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX
  SG_ COUNTER : 8|4@1+ (1,0) [0|15] "" XXX
- SG_ Signal1 : 12|28@1+ (1,0) [0|268435455] "" XXX
+ SG_ Signal1 : 12|16@1+ (1,0) [0|65535] "" XXX
+ SG_ Gen3_Cruise_Off : 28|1@1+ (1,0) [0|1] "" XXX
+ SG_ Signal1_2 : 29|11@1+ (1,0) [0|2047] "" XXX
  SG_ Cruise_On : 40|1@1+ (1,0) [0|1] "" XXX
  SG_ Cruise_Activated : 41|1@1+ (1,0) [0|1] "" XXX
  SG_ Signal2 : 42|22@1+ (1,0) [0|4194303] "" XXX

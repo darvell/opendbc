@@ -3,7 +3,7 @@ from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
-from opendbc.car.subaru.values import CAR, GLOBAL_ES_ADDR, SubaruFlags, SubaruSafetyFlags
+from opendbc.car.subaru.values import CAR, GEN3_LONGITUDINAL_READY, GLOBAL_ES_ADDR, SubaruFlags, SubaruSafetyFlags
 
 
 class CarInterface(CarInterfaceBase):
@@ -92,8 +92,11 @@ class CarInterface(CarInterfaceBase):
     else:
       raise ValueError(f"unknown car: {candidate}")
 
-    # Experimental and data-derived for the Gen3 Crosstrek only. Other Subaru platforms stay disabled.
-    ret.alphaLongitudinalAvailable = candidate == CAR.SUBARU_CROSSTREK_2025
+    # The Gen3 Crosstrek actuation messages are data-derived, but engagement is not ready:
+    # the legacy CruiseControl and Cruise_Buttons DBC bits are not valid on the observed
+    # 2024/2025 traffic, and EyeSight stops broadcasting its real Set/Resume bits when disabled.
+    # Keep this fail-closed until the 0x1130 EyeSight button DID is decoded on the car.
+    ret.alphaLongitudinalAvailable = candidate == CAR.SUBARU_CROSSTREK_2025 and GEN3_LONGITUDINAL_READY
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     # EyeSight is silenced for alpha long, so its engagement state and set speed
     # cannot remain the source of truth. Use openpilot's button-driven cruise state.

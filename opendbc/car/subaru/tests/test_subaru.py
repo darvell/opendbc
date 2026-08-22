@@ -3,14 +3,14 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
-from opendbc.can import CANPacker
+from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.fingerprints import FW_VERSIONS
 from opendbc.car.subaru.interface import CarInterface
 from opendbc.car.subaru.subarucan import create_es_static_1
-from opendbc.car.subaru.values import CAR, CarControllerParams, SubaruFlags
+from opendbc.car.subaru.values import CAR, DBC, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.sunnypilot.car.interfaces import _initialize_stop_and_go
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
@@ -103,6 +103,39 @@ class TestSubaruAngleController(unittest.TestCase):
     self.assertEqual(low_brake[2], 350)
     self.assertEqual(high_brake[2], 295)
 
+  def test_light_deceleration_coasts_before_braking(self):
+    throttle, rpm, brake = self.controller.longitudinal_commands(-0.1, 10.0)
+    self.assertGreater(throttle, CarControllerParams.THROTTLE_ENGINE_BRAKE)
+    self.assertLess(throttle, CarControllerParams.THROTTLE_BASE_V[2])
+    self.assertGreater(rpm, CarControllerParams.BRAKE_RPM_V[2])
+    self.assertLess(rpm, CarControllerParams.RPM_BASE_V[2])
+    self.assertEqual(brake, 0)
+
+  def test_braking_starts_continuously_below_coast_region(self):
+    brake_start = CarControllerParams.BRAKE_START_ACCEL_V[2]
+    at_threshold = self.controller.longitudinal_commands(brake_start, 10.0)
+    below_threshold = self.controller.longitudinal_commands(brake_start - 0.01, 10.0)
+
+    self.assertEqual(at_threshold, (CarControllerParams.THROTTLE_ENGINE_BRAKE, CarControllerParams.BRAKE_RPM_V[2], 0))
+    self.assertEqual(below_threshold[0], CarControllerParams.THROTTLE_ENGINE_BRAKE)
+    self.assertGreater(below_threshold[2], 0)
+
+  def test_zero_accel_has_no_command_discontinuity(self):
+    slightly_negative = self.controller.longitudinal_commands(-0.001, 10.0)
+    zero = self.controller.longitudinal_commands(0.0, 10.0)
+
+    self.assertLessEqual(abs(zero[0] - slightly_negative[0]), 5)
+    self.assertLessEqual(abs(zero[1] - slightly_negative[1]), 5)
+    self.assertEqual(slightly_negative[2], 0)
+    self.assertEqual(zero[2], 0)
+
+  def test_stop_accel_matches_observed_hold_pressure(self):
+    throttle, rpm, brake = self.controller.longitudinal_commands(-2.0, 0.0)
+    self.assertEqual(throttle, CarControllerParams.THROTTLE_ENGINE_BRAKE)
+    self.assertEqual(rpm, CarControllerParams.BRAKE_RPM_V[0])
+    self.assertGreaterEqual(brake, 225)
+    self.assertLessEqual(brake, 240)
+
 
 class TestSubaruStopAndGo(unittest.TestCase):
   def setUp(self):
@@ -187,7 +220,7 @@ class TestSubaruStopAndGoInitialization(unittest.TestCase):
 
 
 class TestSubaruAlphaLongitudinal(unittest.TestCase):
-  def test_params_use_non_pcm_cruise(self):
+  def test_params_stay_gated_without_verified_button_source(self):
     candidate = CAR.SUBARU_CROSSTREK_2025
     cp = CarInterface.get_std_params(candidate)
     cp.flags = int(candidate.config.flags)
@@ -196,57 +229,36 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
     cp_sp = structs.CarParamsSP(pcmCruiseSpeed=True)
     cp_sp = CarInterface._get_params_sp(cp, cp_sp, candidate, {0: {}, 1: {}, 2: {}}, [], True, False, False)
 
-    self.assertTrue(cp.openpilotLongitudinalControl)
-    self.assertFalse(cp.pcmCruise)
-    self.assertTrue(cp.autoResumeSng)
-    self.assertFalse(cp_sp.pcmCruiseSpeed)
+    self.assertFalse(cp.alphaLongitudinalAvailable)
+    self.assertFalse(cp.openpilotLongitudinalControl)
+    self.assertTrue(cp.pcmCruise)
+    self.assertFalse(cp.autoResumeSng)
+    self.assertTrue(cp_sp.pcmCruiseSpeed)
 
-  def test_physical_buttons_drive_alpha_long_cruise(self):
+  def test_gen3_main_state_uses_observed_active_low_bit(self):
     carstate = CarState.__new__(CarState)
-    carstate.cruise_button_states = {"Set": False, "Resume": False, "Main": False}
     ret = structs.CarState()
     ret.cruiseState.standstill = True
-    cp_alt = SimpleNamespace(vl={
-      "CruiseControl": {"Cruise_On": 1},
-      "Cruise_Buttons": {"Set": 1, "Resume": 0, "Main": 0},
-    })
+    cp_alt = SimpleNamespace(vl={"CruiseControl": {"Gen3_Cruise_Off": 0}})
 
     carstate.update_alpha_long_cruise_state(cp_alt, ret)
-
     self.assertTrue(ret.cruiseState.available)
     self.assertFalse(ret.cruiseState.enabled)
     self.assertFalse(ret.cruiseState.standstill)
-    self.assertEqual(len(ret.buttonEvents), 1)
-    self.assertTrue(ret.buttonEvents[0].pressed)
-    self.assertEqual(ret.buttonEvents[0].type, structs.CarState.ButtonEvent.Type.decelCruise)
+    self.assertEqual(len(ret.buttonEvents), 0)
 
-    cp_alt.vl["Cruise_Buttons"]["Set"] = 0
+    cp_alt.vl["CruiseControl"]["Gen3_Cruise_Off"] = 1
     carstate.update_alpha_long_cruise_state(cp_alt, ret)
-    self.assertEqual(len(ret.buttonEvents), 1)
-    self.assertFalse(ret.buttonEvents[0].pressed)
-    self.assertEqual(ret.buttonEvents[0].type, structs.CarState.ButtonEvent.Type.decelCruise)
+    self.assertFalse(ret.cruiseState.available)
 
-    carstate.CP = SimpleNamespace(pcmCruise=False)
-    self.assertTrue(carstate.update_button_enable(ret.buttonEvents))
+  def test_gen3_main_state_decodes_captured_frames(self):
+    parser = CANParser(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt], [("CruiseControl", 0)], CanBus.alt)
 
-  def test_mads_preserves_cruise_button_events(self):
-    carstate = CarState.__new__(CarState)
-    carstate.CP = SimpleNamespace(flags=SubaruFlags.LKAS_ANGLE)
-    carstate.cruise_button_states = {"Set": False, "Resume": False, "Main": False}
-    carstate.lkas_button = 0
-    carstate.prev_lkas_button = 0
-    ret = structs.CarState()
-    cp_alt = SimpleNamespace(vl={
-      "CruiseControl": {"Cruise_On": 1},
-      "Cruise_Buttons": {"Set": 0, "Resume": 1, "Main": 0},
-    })
-    parsers = {Bus.cam: SimpleNamespace(vl={"ES_LKAS_State": {"LKAS_Dash_State": 0}})}
+    parser.update([0, [(0x240, bytes.fromhex("b30c001013008ab8"), CanBus.alt)]])
+    self.assertEqual(parser.vl["CruiseControl"]["Gen3_Cruise_Off"], 1)
 
-    carstate.update_alpha_long_cruise_state(cp_alt, ret)
-    carstate.update_mads(ret, parsers)
-
-    self.assertEqual(len(ret.buttonEvents), 1)
-    self.assertEqual(ret.buttonEvents[0].type, structs.CarState.ButtonEvent.Type.accelCruise)
+    parser.update([1, [(0x240, bytes.fromhex("c30d00a054408ab6"), CanBus.alt)]])
+    self.assertEqual(parser.vl["CruiseControl"]["Gen3_Cruise_Off"], 0)
 
 
 class TestSubaruSurroundings(unittest.TestCase):

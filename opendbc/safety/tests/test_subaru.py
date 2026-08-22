@@ -380,13 +380,9 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
   }
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE)
 
-  def _cruise_control_msg(self, main, engaged=False):
-    values = {"Cruise_On": main, "Cruise_Activated": engaged}
+  def _cruise_control_msg(self, main):
+    values = {"Gen3_Cruise_Off": not main}
     return self.packer.make_can_msg_safety("CruiseControl", SUBARU_ALT_BUS, values)
-
-  def _cruise_buttons_msg(self, main=False, _set=False, resume=False):
-    values = {"Main": main, "Set": _set, "Resume": resume}
-    return self.packer.make_can_msg_safety("Cruise_Buttons", SUBARU_ALT_BUS, values)
 
   # Stock EyeSight's cruise state is bypassed under openpilot longitudinal control.
   def test_disable_control_allowed_from_cruise(self):
@@ -405,19 +401,11 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
   def test_engage_with_brake_pressed(self):
     pass
 
-  def test_set_and_resume_buttons(self):
-    for button in ("set", "resume"):
-      self.safety.set_controls_allowed(False)
-      self._rx(self._cruise_control_msg(False))
-      self._rx(self._cruise_buttons_msg(_set=button == "set", resume=button == "resume"))
-      self._rx(self._cruise_buttons_msg())
-      self.assertFalse(self.safety.get_controls_allowed(), f"controls allowed on {button} with main off")
-
-      self._rx(self._cruise_control_msg(True))
-      self._rx(self._cruise_buttons_msg(_set=button == "set", resume=button == "resume"))
-      self.assertFalse(self.safety.get_controls_allowed(), f"controls allowed on {button} rising edge")
-      self._rx(self._cruise_buttons_msg())
-      self.assertTrue(self.safety.get_controls_allowed(), f"controls not allowed on {button} falling edge")
+  def test_broadcast_button_bits_do_not_enable(self):
+    self._rx(self._cruise_control_msg(True))
+    for values in ({"Main": 1}, {"Set": 1}, {"Resume": 1}, {}):
+      self._rx(self.packer.make_can_msg_safety("Cruise_Buttons", SUBARU_ALT_BUS, values))
+      self.assertFalse(self.safety.get_controls_allowed())
 
   def test_main_switch_off_disables(self):
     self._rx(self._cruise_control_msg(True))
@@ -425,10 +413,18 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
     self._rx(self._cruise_control_msg(False))
     self.assertFalse(self.safety.get_controls_allowed())
 
-  def test_ecm_cruise_disengage_disables(self):
-    self._rx(self._cruise_control_msg(True, engaged=True))
+  def test_captured_gen3_main_frames(self):
+    main_off = libsafety_py.make_CANPacket(SubaruMsg.CruiseControl, SUBARU_ALT_BUS,
+                                           bytes.fromhex("b30c001013008ab8"))
+    main_on = libsafety_py.make_CANPacket(SubaruMsg.CruiseControl, SUBARU_ALT_BUS,
+                                          bytes.fromhex("c30d00a054408ab6"))
+
     self.safety.set_controls_allowed(True)
-    self._rx(self._cruise_control_msg(True, engaged=False))
+    self.assertTrue(self._rx(main_off))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    self.safety.set_controls_allowed(False)
+    self.assertTrue(self._rx(main_on))
     self.assertFalse(self.safety.get_controls_allowed())
 
 

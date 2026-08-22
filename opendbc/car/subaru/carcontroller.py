@@ -91,19 +91,36 @@ class CarController(CarControllerBase, SnGCarController):
 
   @staticmethod
   def longitudinal_commands(accel, v_ego):
+    throttle_base = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.THROTTLE_BASE_V)
+    rpm_base = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.RPM_BASE_V)
+
     if accel >= 0.:
-      throttle_base = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.THROTTLE_BASE_V)
       throttle_max = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.THROTTLE_MAX_V)
-      rpm_base = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.RPM_BASE_V)
       rpm_max = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.RPM_MAX_V)
       throttle = np.interp(accel, [0., 2.], [throttle_base, throttle_max])
       rpm = np.interp(accel, [0., 2.], [rpm_base, rpm_max])
       brake = 0.
     else:
-      max_brake = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_MAX_V)
-      throttle = CarControllerParams.THROTTLE_ENGINE_BRAKE
-      rpm = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_RPM_V)
-      brake = np.interp(accel, [-3.5, 0.], [max_brake, 0.])
+      brake_start_accel = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_START_ACCEL_V)
+      brake_rpm = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_RPM_V)
+
+      if accel > brake_start_accel:
+        # Stock EyeSight does not jump straight from cruising torque to engine braking.
+        # It first unwinds toward the inactive 1818 command, then reaches 808 at
+        # the point where hydraulic braking begins.
+        coast_midpoint = brake_start_accel / 2.
+        if accel < coast_midpoint:
+          throttle = np.interp(accel, [brake_start_accel, coast_midpoint],
+                               [CarControllerParams.THROTTLE_ENGINE_BRAKE, CarControllerParams.THROTTLE_INACTIVE])
+        else:
+          throttle = np.interp(accel, [coast_midpoint, 0.], [CarControllerParams.THROTTLE_INACTIVE, throttle_base])
+        rpm = np.interp(accel, [brake_start_accel, 0.], [brake_rpm, rpm_base])
+        brake = 0.
+      else:
+        max_brake = np.interp(v_ego, CarControllerParams.LONG_SPEED_BP, CarControllerParams.BRAKE_MAX_V)
+        throttle = CarControllerParams.THROTTLE_ENGINE_BRAKE
+        rpm = brake_rpm
+        brake = np.interp(accel, [-3.5, brake_start_accel], [max_brake, 0.])
 
     return int(round(throttle)), int(round(rpm)), int(round(brake))
 

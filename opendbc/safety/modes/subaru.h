@@ -93,14 +93,11 @@
   {.msg = {{MSG_SUBARU_Wheel_Speeds,    alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_Brake_Status,    alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_CruiseControl,   alt_bus,         8, 20U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
-  {.msg = {{MSG_SUBARU_Cruise_Buttons,  alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_Steering_2,      SUBARU_MAIN_BUS, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
 static bool subaru_gen2 = false;
 static bool subaru_lkas_angle = false;
 static bool subaru_longitudinal = false;
-static bool subaru_set_button_prev = false;
-static bool subaru_resume_button_prev = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -151,32 +148,20 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
   }
   if ((msg->addr == MSG_SUBARU_CruiseControl) && (msg->bus == alt_main_bus)) {
     bool cruise_engaged = GET_BIT(msg, 41U);
-    acc_main_on = GET_BIT(msg, 40U);
 
     if (subaru_longitudinal) {
-      if (!acc_main_on || (cruise_engaged_prev && !cruise_engaged)) {
+      // Gen3 Crosstrek bit 28 is an observed active-low cruise-main state.
+      // The legacy bits 40/41 and 0x146 button definitions do not describe
+      // driver intent on the captured 2024/2025 traffic. Until EyeSight DID
+      // 0x1130 is decoded, longitudinal safety can only revoke controls.
+      acc_main_on = !GET_BIT(msg, 28U);
+      if (!acc_main_on) {
         controls_allowed = false;
       }
-      cruise_engaged_prev = cruise_engaged;
     } else if (!subaru_lkas_angle) {
       pcm_cruise_check(cruise_engaged);
     } else {
     }
-  }
-  if (subaru_longitudinal && (msg->addr == MSG_SUBARU_Cruise_Buttons) && (msg->bus == alt_main_bus)) {
-    bool main_button = GET_BIT(msg, 42U);
-    bool set_button = GET_BIT(msg, 43U);
-    bool resume_button = GET_BIT(msg, 44U);
-
-    if ((subaru_set_button_prev && !set_button) || (subaru_resume_button_prev && !resume_button)) {
-      controls_allowed = acc_main_on;
-    }
-    if (main_button) {
-      controls_allowed = false;
-    }
-
-    subaru_set_button_prev = set_button;
-    subaru_resume_button_prev = resume_button;
   }
 
   // update vehicle moving with any non-zero wheel speed
@@ -365,8 +350,6 @@ static safety_config subaru_init(uint16_t param) {
   // Keep the release Panda's safety mode consistent with CarParams so the
   // validated 0x220/0x221/0x222 checks are active on the real device.
   subaru_longitudinal = GET_FLAG(param, SUBARU_PARAM_LONGITUDINAL);
-  subaru_set_button_prev = false;
-  subaru_resume_button_prev = false;
 
   subaru_common_init();
 
