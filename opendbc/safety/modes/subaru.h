@@ -98,6 +98,8 @@
 static bool subaru_gen2 = false;
 static bool subaru_lkas_angle = false;
 static bool subaru_longitudinal = false;
+static bool subaru_gen3_main_seen = false;
+static bool subaru_gen3_main_prev = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -152,12 +154,18 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
     if (subaru_longitudinal) {
       // Gen3 Crosstrek bit 28 is an observed active-low cruise-main state.
       // The legacy bits 40/41 and 0x146 button definitions do not describe
-      // driver intent on the captured 2024/2025 traffic. Until EyeSight DID
-      // 0x1130 is decoded, longitudinal safety can only revoke controls.
+      // driver intent on the captured 2024/2025 traffic. Require a deliberate
+      // main off-to-on edge after the initial sample to authorize controls.
       acc_main_on = !GET_BIT(msg, 28U);
+      if (!subaru_gen3_main_seen) {
+        subaru_gen3_main_seen = true;
+      } else if (acc_main_on && !subaru_gen3_main_prev && !brake_pressed && !gas_pressed) {
+        controls_allowed = true;
+      }
       if (!acc_main_on) {
         controls_allowed = false;
       }
+      subaru_gen3_main_prev = acc_main_on;
     } else if (!subaru_lkas_angle) {
       pcm_cruise_check(cruise_engaged);
     } else {
@@ -350,6 +358,8 @@ static safety_config subaru_init(uint16_t param) {
   // Keep the release Panda's safety mode consistent with CarParams so the
   // validated 0x220/0x221/0x222 checks are active on the real device.
   subaru_longitudinal = GET_FLAG(param, SUBARU_PARAM_LONGITUDINAL);
+  subaru_gen3_main_seen = false;
+  subaru_gen3_main_prev = false;
 
   subaru_common_init();
 

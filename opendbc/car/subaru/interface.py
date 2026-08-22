@@ -92,10 +92,9 @@ class CarInterface(CarInterfaceBase):
     else:
       raise ValueError(f"unknown car: {candidate}")
 
-    # The Gen3 Crosstrek actuation messages are data-derived, but engagement is not ready:
-    # the legacy CruiseControl and Cruise_Buttons DBC bits are not valid on the observed
-    # 2024/2025 traffic, and EyeSight stops broadcasting its real Set/Resume bits when disabled.
-    # Keep this fail-closed until the 0x1130 EyeSight button DID is decoded on the car.
+    # The legacy CruiseControl and Cruise_Buttons bits are not valid on observed Gen3 traffic.
+    # Engagement instead uses the validated active-low cruise-main state: a deliberate off-to-on
+    # edge requests control, while main-off, brake, and the ordinary safety checks revoke it.
     ret.alphaLongitudinalAvailable = candidate == CAR.SUBARU_CROSSTREK_2025 and GEN3_LONGITUDINAL_READY
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     # EyeSight is silenced for alpha long, so its engagement state and set speed

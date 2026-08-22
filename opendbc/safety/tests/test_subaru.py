@@ -407,6 +407,23 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
       self._rx(self.packer.make_can_msg_safety("Cruise_Buttons", SUBARU_ALT_BUS, values))
       self.assertFalse(self.safety.get_controls_allowed())
 
+  def test_main_switch_edge_enables(self):
+    # Initial main-on state is only a baseline and never auto-engages.
+    self._rx(self._cruise_control_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    self._rx(self._cruise_control_msg(False))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._cruise_control_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_main_switch_edge_does_not_enable_with_brake(self):
+    self._rx(self._cruise_control_msg(True))
+    self._rx(self._cruise_control_msg(False))
+    self._rx(self._user_brake_msg(True))
+    self._rx(self._cruise_control_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
   def test_main_switch_off_disables(self):
     self._rx(self._cruise_control_msg(True))
     self.safety.set_controls_allowed(True)
@@ -425,7 +442,7 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
 
     self.safety.set_controls_allowed(False)
     self.assertTrue(self._rx(main_on))
-    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertTrue(self.safety.get_controls_allowed())
 
 
 if __name__ == "__main__":

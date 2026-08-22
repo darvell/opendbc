@@ -26,6 +26,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     self.left_approaching_hold_frames = 0
     self.right_approaching_hold_frames = 0
     self.sonar_stale_frames = self.SONAR_STALE_FRAMES + 1
+    self.gen3_cruise_main_prev: bool | None = None
 
   @staticmethod
   def _feature_state(available, disabled):
@@ -37,14 +38,24 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     # our own replacement ES_Status. The observed Gen3 CruiseControl payload has
     # a dedicated active-low main state at bit 28; the legacy Cruise_On and
     # Cruise_Activated definitions do not change with the car's ACC state.
+    main_on = not bool(cp_alt.vl["CruiseControl"]["Gen3_Cruise_Off"])
     ret.cruiseState.enabled = False
-    ret.cruiseState.available = not bool(cp_alt.vl["CruiseControl"]["Gen3_Cruise_Off"])
+    ret.cruiseState.available = main_on
     # Direct longitudinal actuation can restart without a stock ACC resume command.
     # A stale EyeSight standstill bit would otherwise trap longcontrol in its stopping state.
     ret.cruiseState.standstill = False
-    # The broadcast 0x146 Set/Resume/Main definitions remain zero on the Gen3
-    # routes. Do not synthesize driver intent until EyeSight DID 0x1130 is decoded.
+
     ret.buttonEvents = []
+    # The broadcast 0x146 Set/Resume definitions remain zero on the Gen3 routes.
+    # Use a deliberate cruise-main off-to-on edge as a virtual Set release instead:
+    # this initializes openpilot's set speed at the current vehicle speed and is
+    # mirrored by Panda safety. The first observed main-on frame never auto-engages.
+    if self.gen3_cruise_main_prev is not None and main_on and not self.gen3_cruise_main_prev:
+      event = structs.CarState.ButtonEvent.new_message()
+      event.type = structs.CarState.ButtonEvent.Type.decelCruise
+      event.pressed = False
+      ret.buttonEvents = [event]
+    self.gen3_cruise_main_prev = main_on
 
   def update_subaru_surroundings(self, cp, cp_cam, ret, ret_sp):
     if self.CP.enableBsm:

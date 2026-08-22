@@ -100,9 +100,10 @@ class SubaruFlags(IntFlag):
 
 GLOBAL_ES_ADDR = 0x787
 GEN2_ES_BUTTONS_DID = b'\x11\x30'
-# Set true only after the EyeSight button DID is decoded and engagement is
-# verified against the Gen3 Crosstrek's real steering-wheel controls.
-GEN3_LONGITUDINAL_READY = False
+# The observed active-low Gen3 cruise-main bit is the fail-closed engagement
+# control: turning cruise off revokes control, and a deliberate off-to-on edge
+# requests engagement. Set/Resume remain unavailable until DID 0x1130 is decoded.
+GEN3_LONGITUDINAL_READY = True
 
 
 class CanBus:

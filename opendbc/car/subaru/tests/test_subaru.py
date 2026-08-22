@@ -220,7 +220,7 @@ class TestSubaruStopAndGoInitialization(unittest.TestCase):
 
 
 class TestSubaruAlphaLongitudinal(unittest.TestCase):
-  def test_params_stay_gated_without_verified_button_source(self):
+  def test_params_enable_verified_main_toggle_engagement(self):
     candidate = CAR.SUBARU_CROSSTREK_2025
     cp = CarInterface.get_std_params(candidate)
     cp.flags = int(candidate.config.flags)
@@ -229,18 +229,20 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
     cp_sp = structs.CarParamsSP(pcmCruiseSpeed=True)
     cp_sp = CarInterface._get_params_sp(cp, cp_sp, candidate, {0: {}, 1: {}, 2: {}}, [], True, False, False)
 
-    self.assertFalse(cp.alphaLongitudinalAvailable)
-    self.assertFalse(cp.openpilotLongitudinalControl)
-    self.assertTrue(cp.pcmCruise)
-    self.assertFalse(cp.autoResumeSng)
-    self.assertTrue(cp_sp.pcmCruiseSpeed)
+    self.assertTrue(cp.alphaLongitudinalAvailable)
+    self.assertTrue(cp.openpilotLongitudinalControl)
+    self.assertFalse(cp.pcmCruise)
+    self.assertTrue(cp.autoResumeSng)
+    self.assertFalse(cp_sp.pcmCruiseSpeed)
 
   def test_gen3_main_state_uses_observed_active_low_bit(self):
     carstate = CarState.__new__(CarState)
+    carstate.gen3_cruise_main_prev = None
     ret = structs.CarState()
     ret.cruiseState.standstill = True
     cp_alt = SimpleNamespace(vl={"CruiseControl": {"Gen3_Cruise_Off": 0}})
 
+    # Never auto-engage from the initial main-on sample.
     carstate.update_alpha_long_cruise_state(cp_alt, ret)
     self.assertTrue(ret.cruiseState.available)
     self.assertFalse(ret.cruiseState.enabled)
@@ -250,6 +252,15 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
     cp_alt.vl["CruiseControl"]["Gen3_Cruise_Off"] = 1
     carstate.update_alpha_long_cruise_state(cp_alt, ret)
     self.assertFalse(ret.cruiseState.available)
+    self.assertEqual(len(ret.buttonEvents), 0)
+
+    # A deliberate off-to-on edge is exposed as a virtual Set release.
+    cp_alt.vl["CruiseControl"]["Gen3_Cruise_Off"] = 0
+    carstate.update_alpha_long_cruise_state(cp_alt, ret)
+    self.assertTrue(ret.cruiseState.available)
+    self.assertEqual(len(ret.buttonEvents), 1)
+    self.assertEqual(ret.buttonEvents[0].type, structs.CarState.ButtonEvent.Type.decelCruise)
+    self.assertFalse(ret.buttonEvents[0].pressed)
 
   def test_gen3_main_state_decodes_captured_frames(self):
     parser = CANParser(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt], [("CruiseControl", 0)], CanBus.alt)
