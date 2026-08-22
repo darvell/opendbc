@@ -262,6 +262,16 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
     self.assertEqual(ret.buttonEvents[0].type, structs.CarState.ButtonEvent.Type.decelCruise)
     self.assertFalse(ret.buttonEvents[0].pressed)
 
+  def test_gen3_main_edge_does_not_enable_with_brake(self):
+    carstate = CarState.__new__(CarState)
+    carstate.gen3_cruise_main_prev = False
+    ret = structs.CarState(brakePressed=True)
+    cp_alt = SimpleNamespace(vl={"CruiseControl": {"Gen3_Cruise_Off": 0}})
+
+    carstate.update_alpha_long_cruise_state(cp_alt, ret)
+    self.assertTrue(ret.cruiseState.available)
+    self.assertEqual(len(ret.buttonEvents), 0)
+
   def test_gen3_main_state_decodes_captured_frames(self):
     parser = CANParser(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt], [("CruiseControl", 0)], CanBus.alt)
 

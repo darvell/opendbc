@@ -424,6 +424,13 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
     self._rx(self._cruise_control_msg(True))
     self.assertFalse(self.safety.get_controls_allowed())
 
+  def test_main_switch_edge_does_not_enable_with_gas(self):
+    self._rx(self._cruise_control_msg(True))
+    self._rx(self._cruise_control_msg(False))
+    self._rx(self._user_gas_msg(1))
+    self._rx(self._cruise_control_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
   def test_main_switch_off_disables(self):
     self._rx(self._cruise_control_msg(True))
     self.safety.set_controls_allowed(True)

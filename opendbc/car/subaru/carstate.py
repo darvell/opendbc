@@ -50,7 +50,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     # Use a deliberate cruise-main off-to-on edge as a virtual Set release instead:
     # this initializes openpilot's set speed at the current vehicle speed and is
     # mirrored by Panda safety. The first observed main-on frame never auto-engages.
-    if self.gen3_cruise_main_prev is not None and main_on and not self.gen3_cruise_main_prev:
+    if self.gen3_cruise_main_prev is not None and main_on and not self.gen3_cruise_main_prev and not ret.brakePressed and not ret.gasPressed:
       event = structs.CarState.ButtonEvent.new_message()
       event.type = structs.CarState.ButtonEvent.Type.decelCruise
       event.pressed = False
