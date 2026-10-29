@@ -204,12 +204,7 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
   }
 
   if ((msg->addr == MSG_SUBARU_Throttle) && (msg->bus == SUBARU_MAIN_BUS)) {
-    subaru_stop_and_go_throttle_pedal = msg->data[4];
     gas_pressed = msg->data[4] != 0U;
-  }
-
-  if ((msg->addr == MSG_SUBARU_Brake_Pedal) && (msg->bus == SUBARU_MAIN_BUS)) {
-    subaru_stop_and_go_brake_pedal_speed = GET_BYTES(msg, 2, 2) & 0xFFFU;
   }
 }
 
@@ -280,16 +275,6 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  if ((msg->addr == MSG_SUBARU_Throttle) && (msg->bus == SUBARU_CAM_BUS)) {
-    const int throttle_pedal = msg->data[4];
-    violation |= subaru_common_stop_and_go_throttle_check(throttle_pedal);
-  }
-
-  if ((msg->addr == MSG_SUBARU_Brake_Pedal) && (msg->bus == SUBARU_CAM_BUS)) {
-    const int brake_pedal_speed = GET_BYTES(msg, 2, 2) & 0xFFFU;
-    violation |= subaru_common_stop_and_go_brake_pedal_check(brake_pedal_speed, false);
-  }
-
   if (msg->addr == MSG_SUBARU_ES_Brake) {
     int brake_pressure = GET_BYTES(msg, 2, 2);
     violation |= subaru_longitudinal_cmd_checks(brake_pressure, 0, max_brake, 0);
@@ -352,13 +337,6 @@ static safety_config subaru_init(uint16_t param) {
     SUBARU_GEN2_LONG_ADDITIONAL_TX_MSGS()
   };
 
-  static const CanMsg SUBARU_LKAS_ANGLE_GEN2_SNG_TX_MSGS[] = {
-    SUBARU_BASE_TX_MSGS(SUBARU_ALT_BUS, MSG_SUBARU_ES_LKAS_ANGLE)
-    SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
-    SUBARU_LKAS_ALERT_TX_MSGS
-    SUBARU_STOP_AND_GO_TX_MSGS
-  };
-
   static const CanMsg subaru_stop_and_go_tx_msgs[] = {
     SUBARU_BASE_TX_MSGS(SUBARU_MAIN_BUS, MSG_SUBARU_ES_LKAS)
     SUBARU_COMMON_TX_MSGS(SUBARU_MAIN_BUS)
@@ -392,8 +370,7 @@ static safety_config subaru_init(uint16_t param) {
         SUBARU_LKAS_ANGLE_LONG_RX_CHECKS(SUBARU_ALT_BUS)
       };
       ret = subaru_longitudinal ? BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_long_rx_checks, SUBARU_LKAS_ANGLE_GEN2_LONG_TX_MSGS) : \
-                                  (subaru_stop_and_go ? BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_SNG_TX_MSGS) : \
-                                                        BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_TX_MSGS));
+                                  BUILD_SAFETY_CFG(subaru_lkas_angle_gen2_rx_checks, SUBARU_LKAS_ANGLE_GEN2_TX_MSGS);
     } else {
       static RxCheck subaru_lkas_angle_rx_checks[] = {
         SUBARU_LKAS_ANGLE_RX_CHECKS(SUBARU_MAIN_BUS)

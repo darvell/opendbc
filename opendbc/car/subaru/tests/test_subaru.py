@@ -15,8 +15,6 @@ from opendbc.car.subaru.values import CAR, DBC, CanBus, CarControllerParams, Sub
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from opendbc.sunnypilot.car.interfaces import _initialize_stop_and_go
-from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
-from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP, SubaruSafetyFlagsSP
 
 
 class TestSubaruFingerprint(unittest.TestCase):
@@ -241,86 +239,20 @@ class TestSubaruLowSpeedAngleFilter(unittest.TestCase):
     self.assertEqual(ci.CC.angle_filter.x, 12.0)
 
 
-class TestSubaruStopAndGo(unittest.TestCase):
-  def setUp(self):
-    self.sng = SnGCarController(SimpleNamespace(flags=0),
-                                 SimpleNamespace(flags=SubaruFlagsSP.STOP_AND_GO))
-    self.cc = SimpleNamespace(enabled=True, hudControl=SimpleNamespace(leadVisible=True),
-                              cruiseControl=SimpleNamespace(resume=False))
-    self.cs = SimpleNamespace(
-      out=SimpleNamespace(standstill=True),
-      es_distance_msg={"Close_Distance": 4.0},
-      throttle_msg={"COUNTER": 0},
-      brake_pedal_msg={"COUNTER": 0},
-    )
-
-  @patch("opendbc.sunnypilot.car.subaru.stop_and_go.subarucan_ext.create_brake_pedal")
-  @patch("opendbc.sunnypilot.car.subaru.stop_and_go.subarucan_ext.create_throttle")
-  def test_resume_pulse_when_lead_distance_increases(self, create_throttle, create_brake_pedal):
-    self.sng.prev_close_distance = 3.5
-    sends = self.sng.create_stop_and_go(self, self.cc, self.cs, frame=100)
-    create_throttle.assert_called_once_with(self, self.sng.CP, self.cs.throttle_msg, True)
-    create_brake_pedal.assert_called_once_with(self, self.sng.CP, self.cs.brake_pedal_msg, False)
-    self.assertEqual(sends, [create_throttle.return_value, create_brake_pedal.return_value])
-
-  @patch("opendbc.sunnypilot.car.subaru.stop_and_go.subarucan_ext.create_brake_pedal")
-  @patch("opendbc.sunnypilot.car.subaru.stop_and_go.subarucan_ext.create_throttle")
-  def test_explicit_resume_request_works_without_lead_visible(self, create_throttle, create_brake_pedal):
-    self.cc.hudControl.leadVisible = False
-    self.cc.cruiseControl.resume = True
-    sends = self.sng.create_stop_and_go(self, self.cc, self.cs, frame=100)
-    create_throttle.assert_called_once_with(self, self.sng.CP, self.cs.throttle_msg, True)
-    create_brake_pedal.assert_called_once_with(self, self.sng.CP, self.cs.brake_pedal_msg, False)
-    self.assertEqual(sends, [create_throttle.return_value, create_brake_pedal.return_value])
-
-  @patch("opendbc.sunnypilot.car.subaru.stop_and_go.subarucan_ext.create_brake_pedal")
-  @patch("opendbc.sunnypilot.car.subaru.stop_and_go.subarucan_ext.create_throttle")
-  def test_heartbeat_frames_preserved_without_resume(self, create_throttle, create_brake_pedal):
-    self.sng.prev_close_distance = 4.0
-    sends = self.sng.create_stop_and_go(self, self.cc, self.cs, frame=100)
-    create_throttle.assert_called_once_with(self, self.sng.CP, self.cs.throttle_msg, False)
-    create_brake_pedal.assert_called_once_with(self, self.sng.CP, self.cs.brake_pedal_msg, False)
-    self.assertEqual(sends, [create_throttle.return_value, create_brake_pedal.return_value])
-
-
 class TestSubaruStopAndGoInitialization(unittest.TestCase):
-  def test_alpha_long_crosstrek_keeps_stop_and_go_disabled(self):
-    cp = SimpleNamespace(
-      brand='subaru',
-      carFingerprint=CAR.SUBARU_CROSSTREK_2025,
-      flags=SubaruFlags.GLOBAL_GEN2 | SubaruFlags.LKAS_ANGLE,
-      openpilotLongitudinalControl=True,
-      autoResumeSng=False,
-    )
-    cp_sp = SimpleNamespace(flags=0, safetyParam=0)
-
-    _initialize_stop_and_go(cp, cp_sp, {
-      "SubaruStopAndGo": "1",
-      "SubaruStopAndGoManualParkingBrake": "1",
-    })
-
-    self.assertEqual(cp_sp.flags, 0)
-    self.assertEqual(cp_sp.safetyParam, 0)
-    self.assertFalse(cp.autoResumeSng)
-
-  def test_stock_long_crosstrek_enables_stop_and_go(self):
-    cp = SimpleNamespace(
-      brand='subaru',
-      carFingerprint=CAR.SUBARU_CROSSTREK_2025,
-      flags=SubaruFlags.GLOBAL_GEN2 | SubaruFlags.LKAS_ANGLE,
-      openpilotLongitudinalControl=False,
-      autoResumeSng=False,
-    )
-    cp_sp = SimpleNamespace(flags=0, safetyParam=0)
-
-    _initialize_stop_and_go(cp, cp_sp, {
-      "SubaruStopAndGo": "1",
-      "SubaruStopAndGoManualParkingBrake": "0",
-    })
-
-    self.assertEqual(cp_sp.flags, SubaruFlagsSP.STOP_AND_GO)
-    self.assertEqual(cp_sp.safetyParam, SubaruSafetyFlagsSP.STOP_AND_GO)
-    self.assertTrue(cp.autoResumeSng)
+  def test_gen2_crosstrek_never_enables_camera_side_stop_and_go(self):
+    # Gen2 EyeSight reads throttle and brake pedal on the alt bus as well, so spoofing them toward the
+    # camera bus cannot resume it, and blocking their forwarding only starves the camera's copy. On our
+    # 2024 Crosstrek every replacement 0x40/0x139 frame was also rejected by Panda (route 1e).
+    for alpha_long in (False, True):
+      with self.subTest(alpha_long=alpha_long):
+        cp = SimpleNamespace(brand='subaru', carFingerprint=CAR.SUBARU_CROSSTREK_2025,
+                             flags=SubaruFlags.GLOBAL_GEN2 | SubaruFlags.LKAS_ANGLE,
+                             openpilotLongitudinalControl=alpha_long, autoResumeSng=False)
+        cp_sp = SimpleNamespace(flags=0, safetyParam=0)
+        _initialize_stop_and_go(cp, cp_sp, {"SubaruStopAndGo": "1", "SubaruStopAndGoManualParkingBrake": "1"})
+        self.assertEqual((cp_sp.flags, cp_sp.safetyParam), (0, 0))
+        self.assertFalse(cp.autoResumeSng)
 
 
 class TestSubaruAlphaLongitudinal(unittest.TestCase):
