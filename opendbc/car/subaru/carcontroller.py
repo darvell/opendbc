@@ -8,6 +8,7 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.subaru import subarucan
 from opendbc.car.subaru.values import CAR, DBC, GLOBAL_ES_ADDR, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
 
@@ -53,6 +54,26 @@ class CarController(CarControllerBase, SnGCarController):
     else:
       self.angle_filter.x = CC.actuators.steeringAngleDeg
 
+  def panda_allows_lateral(self, CC, CS) -> bool:
+    # The camera's 0x124 is blocked, so a request Panda rejects is a gap the EPS faults on. carControl is
+    # one frame behind CAN, while Panda revokes on the same frame it receives, so mirror Panda's immediate
+    # revocations from this frame's CarState before asserting LKAS_Request.
+    if not CC.latActive or not CS.out.cruiseState.available:
+      return False
+
+    braking = CS.out.brakePressed
+    selfdrive_allowed = CC.enabled and not braking and (self.CP.openpilotLongitudinalControl or CS.out.cruiseState.enabled)
+    if selfdrive_allowed:
+      return True
+
+    # MADS lateral-only control: Panda arms it from the same camera cruise-main and LKAS-button edges
+    # selfdrived uses, and only keeps it through braking when neither brake mode is selected.
+    alt_exp = self.CP.alternativeExperience
+    if not alt_exp & ALTERNATIVE_EXPERIENCE.ENABLE_MADS:
+      return False
+    brake_modes = ALTERNATIVE_EXPERIENCE.MADS_DISENGAGE_LATERAL_ON_BRAKE | ALTERNATIVE_EXPERIENCE.MADS_PAUSE_LATERAL_ON_BRAKE
+    return not (braking and alt_exp & brake_modes)
+
   def lateral_angle(self, CC, CS):
     abs_torque = abs(CS.out.steeringTorque)
     if abs_torque > self.p.STEER_OVERRIDE_TORQUE_HIGH:
@@ -60,10 +81,7 @@ class CarController(CarControllerBase, SnGCarController):
     elif abs_torque < self.p.STEER_OVERRIDE_TORQUE_LOW:
       self.driver_override = False
 
-    # Subaru angle LKAS cannot accept MADS-only requests while selfdrive is disabled.
-    # Panda rejects those requests, which creates a gap in the required 50 Hz angle stream
-    # and causes the EPS to latch a permanent fault.
-    lat_active = CC.enabled and CC.latActive and not self.driver_override
+    lat_active = self.panda_allows_lateral(CC, CS) and not self.driver_override
     # Do not keep LKAS_Request asserted while the wheel is already beyond the
     # active-angle ceiling. The EPS can latch a permanent fault even when the
     # requested angle itself is clamped to the ceiling.

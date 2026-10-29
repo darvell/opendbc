@@ -13,6 +13,7 @@ from opendbc.car.subaru.interface import CarInterface
 from opendbc.car.subaru.subarucan import create_es_static_1
 from opendbc.car.subaru.values import CAR, DBC, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from opendbc.sunnypilot.car.interfaces import _initialize_stop_and_go
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
 from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP, SubaruSafetyFlagsSP
@@ -41,6 +42,7 @@ class TestSubaruAngleController(unittest.TestCase):
     self.controller.packer = cast(CANPacker, object())
     self.controller.VM = cast(VehicleModel, object())
     self.controller.angle_filter = FirstOrderFilter(0.0, 0.0, DT_CTRL)
+    self.controller.CP = SimpleNamespace(alternativeExperience=0, openpilotLongitudinalControl=False)
 
   def step(self, cc, cs):
     # These tests cover request gating and limits; the low-speed target filter is covered separately.
@@ -52,8 +54,9 @@ class TestSubaruAngleController(unittest.TestCase):
     return SimpleNamespace(enabled=enabled, latActive=lat_active, actuators=SimpleNamespace(steeringAngleDeg=angle))
 
   @staticmethod
-  def state(measured=0.0, torque=0.0, speed=15.0):
-    return SimpleNamespace(out=SimpleNamespace(steeringAngleDeg=measured, steeringTorque=torque, vEgoRaw=speed))
+  def state(measured=0.0, torque=0.0, speed=15.0, brake=False, main=True, cruise=True):
+    return SimpleNamespace(out=SimpleNamespace(steeringAngleDeg=measured, steeringTorque=torque, vEgoRaw=speed, brakePressed=brake,
+                                               cruiseState=SimpleNamespace(available=main, enabled=cruise)))
 
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_inactive_tracks_measured_angle_through_full_lock(self, create_angle_msg):
@@ -72,6 +75,33 @@ class TestSubaruAngleController(unittest.TestCase):
     self.step(self.control(lat_active=True, angle=-190), self.state(measured=-205))
     create_angle_msg.assert_called_once_with(self.controller.packer, -205.0, False)
     self.assertEqual(self.controller.apply_angle_last, -205.0)
+
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_vm", return_value=1000.)
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_delta_vm", return_value=100.)
+  @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
+  @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
+  def test_request_mirrors_panda_revocations(self, create_angle_msg, *_):
+    self.controller.p.ANGLE_LIMITS = SimpleNamespace(MAX_ANGLE_RATE=100.)
+    mads = ALTERNATIVE_EXPERIENCE.ENABLE_MADS
+    cases = (
+      # alternativeExperience, CarControl.enabled, CarState kwargs, LKAS_Request expected
+      (0, True, {}, True),
+      (0, True, {"brake": True}, False),        # Panda drops controls on the brake frame itself
+      (0, True, {"cruise": False}, False),       # ES_Status disengaged on this frame
+      (0, True, {"main": False}, False),         # cruise main off
+      (0, False, {}, False),                      # MADS-only request without MADS armed in Panda
+      (mads, False, {}, True),                    # MADS lateral-only
+      (mads, False, {"main": False}, False),
+      (mads, True, {"brake": True}, True),       # MADS keeps lateral through braking by default
+      (mads | ALTERNATIVE_EXPERIENCE.MADS_DISENGAGE_LATERAL_ON_BRAKE, True, {"brake": True}, False),
+      (mads | ALTERNATIVE_EXPERIENCE.MADS_PAUSE_LATERAL_ON_BRAKE, False, {"brake": True}, False),
+    )
+    for alt_exp, enabled, state, expected in cases:
+      with self.subTest(alt_exp=alt_exp, enabled=enabled, **state):
+        self.controller.CP.alternativeExperience = alt_exp
+        self.controller.apply_angle_last = 10.0
+        self.step(self.control(angle=12, enabled=enabled), self.state(measured=10, **state))
+        create_angle_msg.assert_called_with(self.controller.packer, 12 if expected else 10.0, expected)
 
   @patch("opendbc.car.subaru.carcontroller.get_max_angle_vm", return_value=1000.)
   @patch("opendbc.car.subaru.carcontroller.get_max_angle_delta_vm", return_value=100.)
@@ -149,6 +179,7 @@ class TestSubaruLowSpeedAngleFilter(unittest.TestCase):
     ci = CarInterface(cp, CarInterface.get_non_essential_params_sp(cp, CAR.SUBARU_CROSSTREK_2025))
     ci.update([])
     ci.CS.out = structs.CarState(vEgo=speed, vEgoRaw=speed)
+    ci.CS.out.cruiseState.available = ci.CS.out.cruiseState.enabled = True
     return ci
 
   @staticmethod

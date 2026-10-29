@@ -121,19 +121,36 @@ class TestSubaruSafetyBase(common.CarSafetyTest):
     return self.packer.make_can_msg_safety("CruiseControl", self.ALT_MAIN_BUS, values)
 
   def _lkas_button_msg(self, lkas_pressed=False, lkas_hud=0):
-    values = {"LKAS_Dash_State": 2 if lkas_pressed else lkas_hud}
+    # The camera reports an LKAS button press as LKAS_Dash_State 1, the only value selfdrived maps to ButtonType.lkas.
+    values = {"LKAS_Dash_State": 1 if lkas_pressed else lkas_hud}
     return self.packer.make_can_msg_safety("ES_LKAS_State", SUBARU_CAM_BUS, values)
+
+  def _acc_state_msg(self, enable):
+    return self.packer.make_can_msg_safety("CruiseControl", self.ALT_MAIN_BUS, {"Cruise_On": enable})
 
   def test_enable_control_allowed_with_mads_button(self):
     for enable_mads in (True, False):
       with self.subTest("enable_mads", mads_enabled=enable_mads):
         for mads_button_press in range(4):
           with self.subTest("mads_button_press", button_state=mads_button_press):
+            self.setUp()
             self.safety.set_mads_params(enable_mads, False, False)
 
             self._rx(self._lkas_button_msg(False, mads_button_press))
-            self.assertEqual(enable_mads and mads_button_press in range(1, 4),
+            self.assertEqual(enable_mads and mads_button_press == 1,
                              self.safety.get_controls_allowed_lateral())
+
+  def test_mads_button_rearms_after_release(self):
+    # selfdrived toggles MADS on every press, so Panda must see a new rising edge for each one.
+    self.safety.set_mads_params(True, False, False)
+    for _ in range(3):
+      self._rx(self._lkas_button_msg(True))
+      self._rx(self._lkas_button_msg(False))
+      self.assertTrue(self.safety.get_controls_allowed_lateral())
+      self.safety.set_controls_allowed_lateral(False)
+    self._rx(self._lkas_button_msg(False, 2))
+    self._rx(self._lkas_button_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
 
 
 class TestSubaruStockLongitudinalSafetyBase(TestSubaruSafetyBase):
@@ -354,7 +371,28 @@ class SubaruDynamicLongitudinalSafetyMixin:
     self.assertFalse(self._tx(self._es_uds_msg(b'\x03\xaa\xaa' + b'\x00' * 5)))
 
 
-class TestSubaruGen1AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafetyBase, TestSubaruAngleSafetyBase):
+class SubaruAngleStockLongitudinalMadsMixin:
+  def _acc_state_msg(self, enable):
+    # Cruise main comes from the camera on angle-LKAS cars, matching CarState.cruiseState.available.
+    return self.packer.make_can_msg_safety("ES_DashStatus", SUBARU_CAM_BUS, {"Cruise_On": enable})
+
+  def test_legacy_cruise_main_bit_is_ignored(self):
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self.packer.make_can_msg_safety("CruiseControl", self.ALT_MAIN_BUS, {"Cruise_On": 1}))
+    self.assertFalse(self.safety.get_acc_main_on())
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+  def test_cruise_main_from_camera_arms_and_exits_mads(self):
+    self.safety.set_mads_params(True, False, False)
+    self._rx(self._acc_state_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertTrue(self.safety.get_controls_allowed_lateral())
+    self._rx(self._acc_state_msg(False))
+    self.assertFalse(self.safety.get_controls_allowed_lateral())
+
+
+class TestSubaruGen1AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMadsMixin, TestSubaruStockLongitudinalSafetyBase,
+                                              TestSubaruAngleSafetyBase):
   FLAGS = SubaruSafetyFlags.LKAS_ANGLE
   TX_MSGS = lkas_tx_msgs(SUBARU_MAIN_BUS, SubaruMsg.ES_LKAS_ANGLE)
   RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS_ANGLE, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
@@ -362,7 +400,8 @@ class TestSubaruGen1AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafe
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE)
 
 
-class TestSubaruGen2AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafetyBase, TestSubaruAngleSafetyBase):
+class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMadsMixin, TestSubaruStockLongitudinalSafetyBase,
+                                              TestSubaruAngleSafetyBase):
   ALT_MAIN_BUS = SUBARU_ALT_BUS
   ALT_CAM_BUS = SUBARU_ALT_BUS
   FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE
@@ -404,6 +443,7 @@ class TestSubaruGen2AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafe
             cc = structs.CarControl(enabled=lat_active, latActive=lat_active)
             cc.actuators.steeringAngleDeg = sign * desired
             ci.CS.out = structs.CarState(vEgo=speed, vEgoRaw=speed, steeringAngleDeg=angle)
+            ci.CS.out.cruiseState.available = ci.CS.out.cruiseState.enabled = lat_active
             self._rx(self._angle_meas_msg(angle))
             self._reset_speed_measurement(speed)
             self.safety.set_controls_allowed(lat_active)
@@ -438,6 +478,9 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
     values = {"Gen3_Cruise_Off": not main}
     return self.packer.make_can_msg_safety("CruiseControl", SUBARU_ALT_BUS, values)
 
+  def _acc_state_msg(self, enable):
+    return self._cruise_control_msg(enable)
+
   # Stock EyeSight's cruise state is bypassed under openpilot longitudinal control.
   def test_disable_control_allowed_from_cruise(self):
     pass
@@ -450,6 +493,12 @@ class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin
 
   # EyeSight is silent in alpha long, so its LKAS HUD button is unavailable.
   def test_enable_control_allowed_with_mads_button(self):
+    pass
+
+  def test_mads_button_rearms_after_release(self):
+    pass
+
+  def test_enable_control_allowed_with_mads_button_and_disable_with_main_cruise(self):
     pass
 
   def test_engage_with_brake_pressed(self):

@@ -86,6 +86,7 @@
   {.msg = {{MSG_SUBARU_ES_Status,       alt_bus,         8, 20U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_Steering_2,      SUBARU_MAIN_BUS, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_ES_LKAS_State,   SUBARU_CAM_BUS,  8, 10U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+  {.msg = {{MSG_SUBARU_ES_DashStatus,   SUBARU_CAM_BUS,  8, 10U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
 #define SUBARU_LKAS_ANGLE_LONG_RX_CHECKS(alt_bus)                                                                                               \
   {.msg = {{MSG_SUBARU_Throttle,        SUBARU_MAIN_BUS, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}}, \
@@ -135,10 +136,17 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
   }
 
   if ((msg->addr == MSG_SUBARU_ES_LKAS_State) && (msg->bus == SUBARU_CAM_BUS)) {
+    // The camera reports an LKAS button press as LKAS_Dash_State 1. Track release too: a latched press
+    // never produces another rising edge, so MADS could not be re-armed by the button after the first press
+    // while selfdrived still toggled it, leaving the two sides disagreeing.
     int lkas_hud = (msg->data[2] & 0x0CU) >> 2U;
-    if ((lkas_hud >= 1) && (lkas_hud <= 3)) {
-      mads_button_press = MADS_BUTTON_PRESSED;
-    }
+    mads_button_press = (lkas_hud == 1) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+  }
+
+  // Angle-LKAS cars report cruise main through the camera, the same source selfdrived uses for
+  // cruiseState.available. The legacy CruiseControl main bit stays zero on Gen3 traffic.
+  if (subaru_lkas_angle && !subaru_longitudinal && (msg->addr == MSG_SUBARU_ES_DashStatus) && (msg->bus == SUBARU_CAM_BUS)) {
+    acc_main_on = GET_BIT(msg, 49U);
   }
 
   // Stock longitudinal enters controls from the stock ACC state. Alpha long
@@ -167,6 +175,7 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
       }
       subaru_gen3_main_prev = acc_main_on;
     } else if (!subaru_lkas_angle) {
+      acc_main_on = GET_BIT(msg, 40U);
       pcm_cruise_check(cruise_engaged);
     } else {
     }
