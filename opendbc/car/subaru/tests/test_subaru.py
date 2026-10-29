@@ -10,7 +10,7 @@ from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.fingerprints import FW_VERSIONS
 from opendbc.car.subaru.interface import CarInterface
-from opendbc.car.subaru.subarucan import create_es_static_1
+from opendbc.car.subaru.subarucan import create_es_lkas_alert, create_es_static_1
 from opendbc.car.subaru.values import CAR, DBC, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
@@ -384,6 +384,72 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
 
     parser.update([1, [(0x240, bytes.fromhex("c30d00a054408ab6"), CanBus.alt)]])
     self.assertEqual(parser.vl["CruiseControl"]["Gen3_Cruise_Off"], 0)
+
+
+class TestSubaruLkasAlert(unittest.TestCase):
+  """LKAS_ANGLE cameras repeat their LKAS alert on 0x3C4, which the dash also reads."""
+
+  def setUp(self):
+    self.packer = CANPacker(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt])
+
+  def roundtrip(self, values, visual_alert=structs.CarControl.HUDControl.VisualAlert.none):
+    stock = {"CHECKSUM": 0, "Signal1": 0, "LKAS_Alert": 0, "LKAS_Alert_Msg": 0, "LKAS_Alert_State": 0, "Signal2": 0, "Signal3": 0}
+    stock.update(values)
+    addr, dat, bus = create_es_lkas_alert(self.packer, 0, stock, visual_alert)
+    parser = CANParser(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt], [("ES_LKAS_Alert", float("nan"))], bus)
+    parser.update([(0, [(addr, dat, bus)])])
+    return parser.vl["ES_LKAS_Alert"]
+
+  def test_keep_hands_nag_is_filtered_with_its_state(self):
+    for msg in (1, 7):
+      with self.subTest(msg=msg):
+        out = self.roundtrip({"LKAS_Alert_Msg": msg, "LKAS_Alert_State": 4})
+        self.assertEqual((out["LKAS_Alert_Msg"], out["LKAS_Alert_State"]), (0, 0))
+
+  def test_other_alerts_pass_through(self):
+    out = self.roundtrip({"LKAS_Alert_Msg": 6, "LKAS_Alert_State": 4, "LKAS_Alert": 1, "Signal3": 1234})
+    self.assertEqual((out["LKAS_Alert_Msg"], out["LKAS_Alert_State"], out["LKAS_Alert"], out["Signal3"]), (6, 4, 1, 1234))
+
+  def test_audible_alerts_match_es_lkas_state_filtering(self):
+    for alert, msg, expected in ((27, 0, 0), (30, 0, 0), (28, 7, 0), (28, 0, 28), (24, 0, 24)):
+      with self.subTest(alert=alert, msg=msg):
+        self.assertEqual(self.roundtrip({"LKAS_Alert": alert, "LKAS_Alert_Msg": msg})["LKAS_Alert"], expected)
+
+  def test_openpilot_steer_required_is_shown(self):
+    out = self.roundtrip({}, structs.CarControl.HUDControl.VisualAlert.steerRequired)
+    self.assertEqual((out["LKAS_Alert_Msg"], out["LKAS_Alert_State"]), (1, 4))
+
+  def test_missing_alert_does_not_invalidate_can(self):
+    cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    cam = CarState.get_can_parsers(cp, None)[Bus.cam]
+    _ = cam.vl["ES_LKAS_State"]
+
+    def run(start):
+      # can_valid is evaluated once per update, as card does
+      valid = []
+      for i in range(start, start + 30):
+        cam.update([(int(i * 1e8), [self.packer.make_can_msg("ES_LKAS_State", CanBus.camera, {"COUNTER": i % 16})])])
+        valid.append(cam.can_valid)
+      return valid[-1]
+
+    self.assertTrue(run(0))
+    self.assertEqual(cam.ts_nanos["ES_LKAS_Alert"]["LKAS_Alert_Msg"], 0)
+    # Registering it the ordinary way (by reading vl) would make an absent message invalidate CAN.
+    _ = cam.vl["ES_HighBeamAssist"]
+    self.assertFalse(run(30))
+
+  def test_replacement_is_sent_only_after_the_camera_sends_one(self):
+    cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    ci = CarInterface(cp, CarInterface.get_non_essential_params_sp(cp, CAR.SUBARU_CROSSTREK_2025))
+
+    def sent_alerts(frames):
+      cc = structs.CarControl().as_reader()
+      return [addr for frame in range(frames) for addr, *_ in ci.CC.update(cc, structs.CarControlSP(), ci.CS, frame)[1] if addr == 0x3C4]
+
+    ci.update([(0, [])])
+    self.assertEqual(sent_alerts(20), [])
+    ci.update([(int(1e8), [self.packer.make_can_msg("ES_LKAS_Alert", CanBus.camera, {"LKAS_Alert_Msg": 1})])])
+    self.assertEqual(sent_alerts(20), [0x3C4, 0x3C4])
 
 
 class TestSubaruSurroundings(unittest.TestCase):

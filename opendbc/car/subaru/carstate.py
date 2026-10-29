@@ -27,6 +27,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     self.right_approaching_hold_frames = 0
     self.sonar_stale_frames = self.SONAR_STALE_FRAMES + 1
     self.gen3_cruise_main_prev: bool | None = None
+    self.es_lkas_alert_msg: dict[str, float] | None = None
 
   @staticmethod
   def _feature_state(available, disabled):
@@ -209,6 +210,10 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
                        (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 2)
 
       self.es_lkas_state_msg = copy.copy(cp_cam.vl["ES_LKAS_State"])
+      # Only replace the camera's duplicate LKAS alert once one has arrived; it is registered as optional
+      # in get_can_parsers so cameras that never send it do not invalidate CAN.
+      if self.CP.flags & SubaruFlags.LKAS_ANGLE and cp_cam.ts_nanos["ES_LKAS_Alert"]["LKAS_Alert_Msg"] != 0:
+        self.es_lkas_alert_msg = copy.copy(cp_cam.vl["ES_LKAS_Alert"])
       self.es_brake_msg = copy.copy(cp_es_brake.vl["ES_Brake"])
 
       # TODO: Hybrid cars don't have ES_Distance, need a replacement
@@ -236,8 +241,10 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
 
   @staticmethod
   def get_can_parsers(CP, CP_SP):
+    # The camera's duplicate LKAS alert is not sent by every camera, so never let it affect CAN validity.
+    cam_messages = [("ES_LKAS_Alert", float("nan"))] if CP.flags & SubaruFlags.LKAS_ANGLE else []
     return {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.main),
-      Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.camera),
+      Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], cam_messages, CanBus.camera),
       Bus.alt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.alt)
     }

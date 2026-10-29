@@ -131,6 +131,40 @@ def create_es_lkas_state(packer, frame, es_lkas_state_msg, enabled, visual_alert
   return packer.make_can_msg("ES_LKAS_State", CanBus.main, values)
 
 
+def create_es_lkas_alert(packer, frame, es_lkas_alert_msg, visual_alert):
+  # LKAS_ANGLE cameras repeat the LKAS alert on a second address the dash also reads, so the filtering in
+  # create_es_lkas_state has to be mirrored here or the stock "Keep hands on wheel" nag still shows while
+  # openpilot steers. From NylonDiamond/opendbc@1de940ff.
+  values = {s: es_lkas_alert_msg[s] for s in [
+    "CHECKSUM",
+    "Signal1",
+    "LKAS_Alert",
+    "LKAS_Alert_Msg",
+    "LKAS_Alert_State",
+    "Signal2",
+    "Signal3",
+  ]}
+
+  values["COUNTER"] = frame % 0x10
+
+  stock_alert_msg = values["LKAS_Alert_Msg"]
+  if stock_alert_msg in (1, 7):
+    values["LKAS_Alert_Msg"] = 0
+    # LKAS_Alert_State reads 4 for as long as a message is up, so it goes with the message.
+    if values["LKAS_Alert_State"] == 4:
+      values["LKAS_Alert_State"] = 0
+
+  # Same audible alerts create_es_lkas_state filters
+  if values["LKAS_Alert"] in (27, 30) or (values["LKAS_Alert"] == 28 and stock_alert_msg == 7):
+    values["LKAS_Alert"] = 0
+
+  if visual_alert == VisualAlert.steerRequired:
+    values["LKAS_Alert_Msg"] = 1
+    values["LKAS_Alert_State"] = 4
+
+  return packer.make_can_msg("ES_LKAS_Alert", CanBus.main, values)
+
+
 def create_es_dashstatus(packer, frame, dashstatus_msg, enabled, long_enabled, long_active, lead_visible):
   values = {s: dashstatus_msg[s] for s in [
     "CHECKSUM",
