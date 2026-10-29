@@ -156,7 +156,7 @@ def _initialize_stop_and_go(CP: structs.CarParams, CP_SP: structs.CarParamsSP, p
 
 
 def _initialize_subaru_comfort(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_dict: dict[str, str]) -> None:
-  if CP.brand != 'subaru' or not comfort_supported(CP):
+  if CP.brand != 'subaru' or not comfort_supported(CP.carFingerprint):
     return
 
   if int(params_dict.get("SubaruAutoVehicleHold", 0)) == 1:

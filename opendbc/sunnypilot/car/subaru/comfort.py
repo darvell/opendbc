@@ -14,7 +14,7 @@ from enum import StrEnum
 from opendbc.can.parser import CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.can_definitions import CanData
-from opendbc.car.subaru.values import CanBus, SubaruFlags
+from opendbc.car.subaru.values import CAR, CanBus
 from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP
 
 # Each request is made at the start of a drive, only while the car is in the wrong state, repeated
@@ -43,9 +43,10 @@ DASHLIGHTS_COPIED = ("Signal1", "Signal2", "UNITS", "Signal3", "ICY_ROAD", "Sign
                      "Signal6", "LEFT_BLINKER", "RIGHT_BLINKER", "Signal7", "Signal8", "Signal9")
 
 
-def comfort_supported(CP: structs.CarParams) -> bool:
-  # Only measured on Gen2 angle-LKAS cars, which is also the only place Panda lets the requests out.
-  return bool(CP.flags & SubaruFlags.GLOBAL_GEN2 and CP.flags & SubaruFlags.LKAS_ANGLE)
+def comfort_supported(car_fingerprint: str) -> bool:
+  # Only measured on the 2024 Crosstrek (ours and NylonDiamond's). Panda additionally refuses the requests
+  # anywhere but the alt bus of a Gen2 angle-LKAS car under stock longitudinal.
+  return car_fingerprint == CAR.SUBARU_CROSSTREK_2025
 
 
 def create_comfort_control(packer, counter: int, comfort_control_msg: dict[str, float]) -> CanData:
@@ -77,12 +78,12 @@ class ComfortCarState:
   @staticmethod
   def comfort_messages(CP: structs.CarParams) -> list[tuple[str, float]]:
     # Optional: a car that never sends these must not invalidate CAN.
-    if not comfort_supported(CP):
+    if not comfort_supported(CP.carFingerprint):
       return []
     return [("Comfort_Control", float("nan")), ("Comfort_Status", float("nan")), ("Engine_Stop_Start", float("nan"))]
 
   def update_comfort(self, can_parsers: dict[StrEnum, CANParser]) -> None:
-    if not comfort_supported(self.CP):
+    if not comfort_supported(self.CP.carFingerprint):
       return
 
     cp = can_parsers[Bus.pt]
@@ -98,7 +99,7 @@ class ComfortCarState:
 
 class ComfortCarController:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
-    supported = comfort_supported(CP)
+    supported = comfort_supported(CP.carFingerprint)
     self.avh_wanted = supported and bool(CP_SP.flags & SubaruFlagsSP.AUTO_VEHICLE_HOLD)
     self.stop_start_wanted = supported and bool(CP_SP.flags & SubaruFlagsSP.STOP_START_OFF)
 
