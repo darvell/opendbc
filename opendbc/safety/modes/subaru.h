@@ -186,6 +186,7 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
         subaru_gen3_main_seen = true;
       } else if (acc_main_on && !subaru_gen3_main_prev && !brake_pressed && !gas_pressed) {
         controls_allowed = true;
+      } else {
       }
       if (!acc_main_on) {
         controls_allowed = false;

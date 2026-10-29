@@ -37,6 +37,7 @@ class TestSubaruAngleController(unittest.TestCase):
       STEER_OVERRIDE_TORQUE_LOW=150,
       ACTIVE_ANGLE_MAX=190,
       ANGLE_INACTIVE_MAX=650,
+      ANGLE_LIMITS=SimpleNamespace(MAX_ANGLE_RATE=100.),
     ))
     self.controller.apply_angle_last = 0.0
     self.controller.driver_override = False
@@ -77,7 +78,6 @@ class TestSubaruAngleController(unittest.TestCase):
   @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_extra_inactive_frame_after_engaging(self, create_angle_msg, *_):
-    self.controller.p.ANGLE_LIMITS = SimpleNamespace(MAX_ANGLE_RATE=100.)
     self.controller.lat_eligible_last = False
     for measured, expected in ((10.0, (10.0, False)), (11.0, (12, True)), (12.0, (12, True))):
       self.step(self.control(angle=12), self.state(measured=measured))
@@ -98,7 +98,6 @@ class TestSubaruAngleController(unittest.TestCase):
   @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_request_mirrors_panda_revocations(self, create_angle_msg, *_):
-    self.controller.p.ANGLE_LIMITS = SimpleNamespace(MAX_ANGLE_RATE=100.)
     mads = ALTERNATIVE_EXPERIENCE.ENABLE_MADS
     cases = (
       # alternativeExperience, CarControl.enabled, CarState kwargs, LKAS_Request expected
@@ -126,7 +125,6 @@ class TestSubaruAngleController(unittest.TestCase):
   @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_driver_override_hysteresis(self, create_angle_msg, _apply_limits, _max_delta, _max_angle):
-    self.controller.p.ANGLE_LIMITS = SimpleNamespace(MAX_ANGLE_RATE=100.)
     cc = self.control(lat_active=True, angle=20)
 
     self.step(cc, self.state(measured=15, torque=201))
