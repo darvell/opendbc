@@ -220,7 +220,7 @@ class TestSubaruStopAndGoInitialization(unittest.TestCase):
 
 
 class TestSubaruAlphaLongitudinal(unittest.TestCase):
-  def test_params_enable_verified_main_toggle_engagement(self):
+  def test_params_keep_unverified_alpha_long_disabled(self):
     candidate = CAR.SUBARU_CROSSTREK_2025
     cp = CarInterface.get_std_params(candidate)
     cp.flags = int(candidate.config.flags)
@@ -229,11 +229,11 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
     cp_sp = structs.CarParamsSP(pcmCruiseSpeed=True)
     cp_sp = CarInterface._get_params_sp(cp, cp_sp, candidate, {0: {}, 1: {}, 2: {}}, [], True, False, False)
 
-    self.assertTrue(cp.alphaLongitudinalAvailable)
-    self.assertTrue(cp.openpilotLongitudinalControl)
-    self.assertFalse(cp.pcmCruise)
-    self.assertTrue(cp.autoResumeSng)
-    self.assertFalse(cp_sp.pcmCruiseSpeed)
+    self.assertFalse(cp.alphaLongitudinalAvailable)
+    self.assertFalse(cp.openpilotLongitudinalControl)
+    self.assertTrue(cp.pcmCruise)
+    self.assertFalse(cp.flags & SubaruFlags.DISABLE_EYESIGHT)
+    self.assertTrue(cp_sp.pcmCruiseSpeed)
 
   def test_gen3_main_state_uses_observed_active_low_bit(self):
     carstate = CarState.__new__(CarState)

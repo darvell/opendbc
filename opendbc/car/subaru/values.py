@@ -100,10 +100,10 @@ class SubaruFlags(IntFlag):
 
 GLOBAL_ES_ADDR = 0x787
 GEN2_ES_BUTTONS_DID = b'\x11\x30'
-# The observed active-low Gen3 cruise-main bit is the fail-closed engagement
-# control: turning cruise off revokes control, and a deliberate off-to-on edge
-# requests engagement. Set/Resume remain unavailable until DID 0x1130 is decoded.
-GEN3_LONGITUDINAL_READY = True
+# Keep experimental longitudinal control unavailable until car-specific input
+# semantics, stock/replacement message ownership, and fault recovery are verified.
+# Parked telemetry and offline regression tests do not establish road readiness.
+GEN3_LONGITUDINAL_READY = False
 
 
 class CanBus:
