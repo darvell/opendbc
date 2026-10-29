@@ -177,12 +177,21 @@ BO_ 552 BSD_RCTA: 8 XXX
 BO_ 912 Dashlights: 8 XXX
  SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX
  SG_ COUNTER : 8|4@1+ (1,0) [0|15] "" XXX
+ SG_ Signal1 : 12|4@1+ (1,0) [0|15] "" XXX
+ SG_ Signal2 : 16|8@1+ (1,0) [0|255] "" XXX
  SG_ UNITS : 24|1@1+ (1,0) [0|1] "" XXX
+ SG_ Signal3 : 25|7@1+ (1,0) [0|127] "" XXX
  SG_ ICY_ROAD : 32|2@1+ (1,0) [0|3] "" XXX
+ SG_ Signal4 : 34|6@1+ (1,0) [0|63] "" XXX
+ SG_ Signal5 : 40|8@1+ (1,0) [0|255] "" XXX
  SG_ SEATBELT_FL : 48|1@1+ (1,0) [0|1] "" XXX
+ SG_ Signal6 : 49|1@1+ (1,0) [0|1] "" XXX
  SG_ LEFT_BLINKER : 50|1@1+ (1,0) [0|1] "" XXX
  SG_ RIGHT_BLINKER : 51|1@1+ (1,0) [0|1] "" XXX
+ SG_ Signal7 : 52|2@1+ (1,0) [0|3] "" XXX
  SG_ STOP_START : 54|1@0+ (1,0) [0|1] "" XXX
+ SG_ Signal8 : 55|1@1+ (1,0) [0|1] "" XXX
+ SG_ Signal9 : 56|8@1+ (1,0) [0|255] "" XXX
 
 BO_ 940 BodyInfo: 8 XXX
  SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX
@@ -303,6 +312,22 @@ BO_ 289 ES_STATIC_2: 8 XXX
  SG_ SET_3 : 15|2@1+ (1,0) [0|3] "" XXX
  SG_ Cruise_Fault : 18|1@0+ (1,0) [0|1] "" XXX
 
+BO_ 1723 Comfort_Control: 8 XXX
+ SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX
+ SG_ COUNTER : 8|4@1+ (1,0) [0|15] "" XXX
+ SG_ Signal1 : 12|4@1+ (1,0) [0|15] "" XXX
+ SG_ AVH_REQUEST : 16|8@1+ (1,0) [0|255] "" XXX
+ SG_ Signal2 : 24|8@1+ (1,0) [0|255] "" XXX
+ SG_ Signal3 : 32|8@1+ (1,0) [0|255] "" XXX
+ SG_ Signal4 : 40|8@1+ (1,0) [0|255] "" XXX
+ SG_ Signal5 : 48|8@1+ (1,0) [0|255] "" XXX
+ SG_ Signal6 : 56|8@1+ (1,0) [0|255] "" XXX
+
+BO_ 811 Comfort_Status: 8 XXX
+ SG_ CHECKSUM : 0|8@1+ (1,0) [0|255] "" XXX
+ SG_ COUNTER : 8|4@1+ (1,0) [0|15] "" XXX
+ SG_ AVH_ACTIVE : 45|1@1+ (1,0) [0|1] "" XXX
+
 CM_ SG_ 64 Throttle_Combo "Throttle Cruise + Pedal";
 CM_ SG_ 313 Brake_Lights "Driver or Cruise Brake on";
 CM_ SG_ 544 Cruise_Brake_Lights "1 = switch on brake lights";
@@ -326,6 +351,8 @@ CM_ SG_ 802 LKAS_Dash_State "0 = Off, 1 = Ready, 2 = Active";
 CM_ SG_ 802 LKAS_Right_Line_Visible "0 = Off, 1 = White, 2 = Green, 3 = Orange";
 CM_ SG_ 964 LKAS_Alert_Msg "Duplicate of ES_LKAS_State.LKAS_Alert_Msg on a second address, same enum. Seen on Gen2 LKAS_ANGLE cars";
 CM_ SG_ 964 LKAS_Alert "Duplicate of ES_LKAS_State.LKAS_Alert on a second address, same enum";
+CM_ SG_ 1723 AVH_REQUEST "Auto Vehicle Hold touchscreen request: 0 = Idle, 1 = Off, 2 = On";
+CM_ SG_ 372 STOP_START_STATE "0 = Auto start-stop armed, 2 = Booting, 3 = Switched off";
 CM_ SG_ 964 LKAS_Alert_State "4 whenever LKAS_Alert_Msg is non-zero, 2 alongside an audio-only alert";
 CM_ SG_ 912 UNITS "0 = Metric, 1 = Imperial";
 CM_ SG_ 912 ICY_ROAD "1 = DASHLIGHT ON, 2 = WARNING, 3 = OFF";

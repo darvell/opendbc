@@ -3,13 +3,16 @@ import enum
 import unittest
 import numpy as np
 
-from opendbc.car import structs
+from opendbc.can import CANPacker
+from opendbc.car import Bus, structs
 from opendbc.car.lateral import get_max_angle_vm
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.interface import CarInterface
-from opendbc.car.subaru.values import CAR, CarControllerParams, SubaruSafetyFlags
+from opendbc.car.subaru.values import CAR, DBC, CarControllerParams, SubaruSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.car.vehicle_model import VehicleModel
+from opendbc.sunnypilot.car.subaru import comfort
+from opendbc.sunnypilot.car.subaru.values_ext import SubaruSafetyFlagsSP
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety, away_round, round_speed
@@ -34,6 +37,8 @@ class SubaruMsg(enum.IntEnum):
   ES_LKAS_State     = 0x322
   ES_Infotainment   = 0x323
   ES_LKAS_Alert     = 0x3C4
+  Dashlights        = 0x390
+  Comfort_Control   = 0x6BB
   ES_HighBeamAssist = 0x22A
   ES_STATIC_1       = 0x325
   ES_STATIC_2       = 0x121
@@ -80,6 +85,7 @@ def fwd_blacklisted_addr(lkas_msg=SubaruMsg.ES_LKAS, stop_and_go=False, lkas_ale
 
 class TestSubaruSafetyBase(common.CarSafetyTest):
   FLAGS = 0
+  SAFETY_PARAM_SP = 0
   RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
                                                SubaruMsg.ES_Infotainment)}
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr()
@@ -99,6 +105,7 @@ class TestSubaruSafetyBase(common.CarSafetyTest):
   def setUp(self):
     self.packer = CANPackerSafety("subaru_global_2017_generated")
     self.safety = libsafety_py.libsafety
+    self.safety.set_current_safety_param_sp(self.SAFETY_PARAM_SP)
     self.safety.set_safety_hooks(CarParams.SafetyModel.subaru, self.FLAGS)
     self.safety.init_tests()
 
@@ -411,7 +418,34 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
   ALT_MAIN_BUS = SUBARU_ALT_BUS
   ALT_CAM_BUS = SUBARU_ALT_BUS
   FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE
-  TX_MSGS = lkas_tx_msgs(SUBARU_ALT_BUS, SubaruMsg.ES_LKAS_ANGLE, lkas_alert=True)
+  TX_MSGS = lkas_tx_msgs(SUBARU_ALT_BUS, SubaruMsg.ES_LKAS_ANGLE, lkas_alert=True) + \
+            [[SubaruMsg.Comfort_Control, SUBARU_ALT_BUS], [SubaruMsg.Dashlights, SUBARU_ALT_BUS]]
+
+  # Our 2024 Crosstrek's steady-state Comfort_Control with the engine running, then the AVH on request.
+  AVH_IDLE = bytes.fromhex("dd03000100000e0a")
+
+  @staticmethod
+  def _with_checksum(addr, dat):
+    dat = bytearray(dat)
+    dat[0] = (addr % 256 + addr // 256 + sum(dat[1:])) & 0xFF
+    return libsafety_py.make_CANPacket(addr, SUBARU_ALT_BUS, bytes(dat))
+
+  def _avh_msg(self, request=2, byte7=0x0A, static=None):
+    dat = bytearray(self.AVH_IDLE)
+    dat[2] = request
+    dat[7] = byte7
+    if static is not None:
+      dat[3:7] = static
+    return self._with_checksum(SubaruMsg.Comfort_Control, dat)
+
+  def _stop_start_msg(self, pressed):
+    dat = bytearray(bytes.fromhex("9405994687960000"))
+    dat[6] = (dat[6] & ~0x40) | (0x40 if pressed else 0)
+    return self._with_checksum(SubaruMsg.Dashlights, dat)
+
+  def test_comfort_requests_refused_without_opt_in(self):
+    self.assertFalse(self._tx(self._avh_msg()))
+    self.assertFalse(self._tx(self._stop_start_msg(True)))
   RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS_ANGLE, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
                                                SubaruMsg.ES_Infotainment, SubaruMsg.ES_LKAS_Alert)}
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE, lkas_alert=True)
@@ -474,6 +508,46 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
           if always_requests is not None:
             # Each engagement starts with one extra inactive frame.
             self.assertEqual(requests, engaged_messages - 2 if always_requests else 0)
+
+
+class TestSubaruGen2AngleComfortSafety(TestSubaruGen2AngleStockLongitudinalSafety):
+  SAFETY_PARAM_SP = SubaruSafetyFlagsSP.AUTO_VEHICLE_HOLD | SubaruSafetyFlagsSP.STOP_START_OFF
+
+  def test_comfort_requests_refused_without_opt_in(self):
+    for sp in (SubaruSafetyFlagsSP.STOP_START_OFF, SubaruSafetyFlagsSP.AUTO_VEHICLE_HOLD):
+      self.safety.set_current_safety_param_sp(sp)
+      self.safety.set_safety_hooks(CarParams.SafetyModel.subaru, self.FLAGS)
+      self.assertEqual(bool(sp & SubaruSafetyFlagsSP.AUTO_VEHICLE_HOLD), self._tx(self._avh_msg()))
+      self.assertEqual(bool(sp & SubaruSafetyFlagsSP.STOP_START_OFF), self._tx(self._stop_start_msg(True)))
+
+  def test_avh_only_carries_the_on_request(self):
+    for moving in (False, True):
+      self._reset_speed_measurement(10. if moving else 0.)
+      self.assertTrue(self._tx(self._avh_msg()))
+      self.assertTrue(self._tx(self._avh_msg(byte7=0x00)))  # NylonDiamond's 2024 Wilderness
+      for request in (0, 1, 3, 0xFF):
+        self.assertFalse(self._tx(self._avh_msg(request=request)))
+      self.assertFalse(self._tx(self._avh_msg(byte7=0x01)))
+      self.assertFalse(self._tx(self._avh_msg(static=bytes([0x01, 0x00, 0x01, 0x0E]))))
+
+  def test_stop_start_only_carries_a_press(self):
+    self.assertTrue(self._tx(self._stop_start_msg(True)))
+    self.assertFalse(self._tx(self._stop_start_msg(False)))
+
+  def test_controller_comfort_frames_are_accepted(self):
+    packer = CANPacker(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt])
+    comfort_control = {"Signal1": 0, "Signal2": 1, "Signal3": 0, "Signal4": 0, "Signal5": 0x0E, "Signal6": 0x0A}
+    dashlights = {s: 0 for s in comfort.DASHLIGHTS_COPIED}
+    for counter in range(16):
+      for addr, dat, bus in (comfort.create_comfort_control(packer, counter, comfort_control),
+                             comfort.create_stop_start_press(packer, counter, dashlights)):
+        self.assertTrue(self._tx(libsafety_py.make_CANPacket(addr, bus, dat)), hex(addr))
+
+  def test_comfort_refused_on_other_configs(self):
+    for flags in (SubaruSafetyFlags.LKAS_ANGLE, SubaruSafetyFlags.GEN2, SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.LKAS_ANGLE | SubaruSafetyFlags.LONG):
+      self.safety.set_safety_hooks(CarParams.SafetyModel.subaru, flags)
+      self.assertFalse(self._tx(self._avh_msg()))
+      self.assertFalse(self._tx(self._stop_start_msg(True)))
 
 
 class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin, TestSubaruAngleSafetyBase):

@@ -7,9 +7,10 @@ from opendbc.car.subaru.values import DBC, CanBus, SubaruFlags
 from opendbc.car import CanSignalRateCalculator
 
 from opendbc.sunnypilot.car.subaru.mads import MadsCarState
+from opendbc.sunnypilot.car.subaru.comfort import ComfortCarState
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarState
 
-class CarState(CarStateBase, MadsCarState, SnGCarState):
+class CarState(CarStateBase, MadsCarState, SnGCarState, ComfortCarState):
   BSM_STALE_FRAMES = 20
   BSM_APPROACHING_HOLD_FRAMES = 100
   SONAR_STALE_FRAMES = 20
@@ -18,6 +19,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     CarStateBase.__init__(self, CP, CP_SP)
     MadsCarState.__init__(self, CP, CP_SP)
     SnGCarState.__init__(self, CP, CP_SP)
+    ComfortCarState.__init__(self, CP, CP_SP)
     can_define = CANDefine(DBC[CP.carFingerprint][Bus.pt])
     self.shifter_values = can_define.dv["Transmission"]["Gear"]
 
@@ -235,6 +237,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
       self.es_infotainment_msg = copy.copy(cp_cam.vl["ES_Infotainment"])
 
     MadsCarState.update_mads(self, ret, can_parsers)
+    ComfortCarState.update_comfort(self, can_parsers)
     SnGCarState.update(self, ret, can_parsers)
 
     return ret, ret_sp
@@ -244,7 +247,7 @@ class CarState(CarStateBase, MadsCarState, SnGCarState):
     # The camera's duplicate LKAS alert is not sent by every camera, so never let it affect CAN validity.
     cam_messages = [("ES_LKAS_Alert", float("nan"))] if CP.flags & SubaruFlags.LKAS_ANGLE else []
     return {
-      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.main),
+      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], ComfortCarState.comfort_messages(CP), CanBus.main),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], cam_messages, CanBus.camera),
       Bus.alt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus.alt)
     }

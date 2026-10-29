@@ -10,6 +10,7 @@ from opendbc.car.subaru.values import CAR, DBC, GLOBAL_ES_ADDR, CanBus, CarContr
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 
+from opendbc.sunnypilot.car.subaru.comfort import ComfortCarController
 from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
 
 # FIXME: These limits aren't exact. The real limit is more than likely over a larger time period and
@@ -24,10 +25,11 @@ def get_safety_CP():
   return CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
 
 
-class CarController(CarControllerBase, SnGCarController):
+class CarController(CarControllerBase, SnGCarController, ComfortCarController):
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
     SnGCarController.__init__(self, CP, CP_SP)
+    ComfortCarController.__init__(self, CP, CP_SP)
     self.apply_torque_last = 0
     self.apply_angle_last = 0.0
     self.driver_override = False
@@ -271,6 +273,7 @@ class CarController(CarControllerBase, SnGCarController):
           can_sends.append(subarucan.create_es_static_2(self.packer))
 
     can_sends.extend(SnGCarController.create_stop_and_go(self, self.packer, CC, CS, self.frame))
+    can_sends.extend(ComfortCarController.create_comfort(self, self.packer, CS, self.frame))
 
     new_actuators = actuators.as_builder()
     if self.CP.flags & SubaruFlags.LKAS_ANGLE:

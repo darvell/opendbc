@@ -28,6 +28,8 @@
 #define MSG_SUBARU_Steering_2            0x11aU
 #define MSG_SUBARU_Wheel_Speeds          0x13aU
 #define MSG_SUBARU_Brake_Pedal           0x139U
+#define MSG_SUBARU_Dashlights            0x390U
+#define MSG_SUBARU_Comfort_Control       0x6BBU
 
 #define MSG_SUBARU_ES_LKAS               0x122U
 #define MSG_SUBARU_ES_LKAS_ANGLE         0x124U
@@ -57,6 +59,13 @@
 // so the stock "Keep hands on wheel" nag stays off while openpilot steers.
 #define SUBARU_LKAS_ALERT_TX_MSGS \
   {MSG_SUBARU_ES_LKAS_Alert,     SUBARU_MAIN_BUS, 8, .check_relay = true}, \
+
+// Auto Vehicle Hold and the auto start-stop shutoff, which the Gen2 Crosstrek forgets every ignition cycle.
+// The car sends both messages itself, so relay checking would fault; the tx hook keeps them inert unless
+// the driver opted in, and pins their content to the one request openpilot makes.
+#define SUBARU_COMFORT_TX_MSGS \
+  {MSG_SUBARU_Comfort_Control,   SUBARU_ALT_BUS,  8, .check_relay = false}, \
+  {MSG_SUBARU_Dashlights,        SUBARU_ALT_BUS,  8, .check_relay = false}, \
 
 #define SUBARU_COMMON_TX_MSGS(alt_bus) \
   {MSG_SUBARU_ES_Distance, alt_bus, 8, .check_relay = false}, \
@@ -107,6 +116,8 @@ static bool subaru_lkas_angle = false;
 static bool subaru_longitudinal = false;
 static bool subaru_gen3_main_seen = false;
 static bool subaru_gen3_main_prev = false;
+static bool subaru_avh = false;
+static bool subaru_stop_start_off = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -275,6 +286,23 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // Auto Vehicle Hold on. Not gated on vehicle_moving: the request arms the hold, it does not brake; the car
+  // only holds after the driver has braked to a stop. The content pin keeps everything else this message
+  // carries out of reach: only the "on" request, with the steady-state bytes seen with the engine running.
+  if (msg->addr == MSG_SUBARU_Comfort_Control) {
+    const bool valid_header = (msg->data[1] & 0xF0U) == 0U;
+    const bool valid_request = msg->data[2] == 2U;
+    const bool valid_static = (msg->data[3] == 0x01U) && (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
+                              (msg->data[6] == 0x0EU) && ((msg->data[7] == 0x00U) || (msg->data[7] == 0x0AU));
+    violation |= !subaru_avh || !valid_header || !valid_request || !valid_static;
+  }
+
+  // Auto start-stop shutoff: a dash button press. Only frames carrying the press are allowed; it only touches
+  // the engine's idle stop, which takes effect at the next standstill.
+  if (msg->addr == MSG_SUBARU_Dashlights) {
+    violation |= !subaru_stop_start_off || !GET_BIT(msg, 54U);
+  }
+
   if (msg->addr == MSG_SUBARU_ES_Brake) {
     int brake_pressure = GET_BYTES(msg, 2, 2);
     violation |= subaru_longitudinal_cmd_checks(brake_pressure, 0, max_brake, 0);
@@ -329,6 +357,7 @@ static safety_config subaru_init(uint16_t param) {
     SUBARU_BASE_TX_MSGS(SUBARU_ALT_BUS, MSG_SUBARU_ES_LKAS_ANGLE)
     SUBARU_COMMON_TX_MSGS(SUBARU_ALT_BUS)
     SUBARU_LKAS_ALERT_TX_MSGS
+    SUBARU_COMFORT_TX_MSGS
   };
 
   static const CanMsg SUBARU_LKAS_ANGLE_GEN2_LONG_TX_MSGS[] = {
@@ -358,6 +387,13 @@ static safety_config subaru_init(uint16_t param) {
   subaru_gen3_main_prev = false;
 
   subaru_common_init();
+
+  // Only measured on the alt bus of Gen2 angle cars under stock longitudinal; refused everywhere else.
+  const uint16_t SUBARU_PARAM_SP_AVH = 2;
+  const uint16_t SUBARU_PARAM_SP_STOP_START_OFF = 4;
+  const bool subaru_comfort_bus = subaru_lkas_angle && subaru_gen2 && !subaru_longitudinal;
+  subaru_avh = subaru_comfort_bus && GET_FLAG(current_safety_param_sp, SUBARU_PARAM_SP_AVH);
+  subaru_stop_start_off = subaru_comfort_bus && GET_FLAG(current_safety_param_sp, SUBARU_PARAM_SP_STOP_START_OFF);
 
 
   safety_config ret;

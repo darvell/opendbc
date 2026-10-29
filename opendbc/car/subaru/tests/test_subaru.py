@@ -14,7 +14,10 @@ from opendbc.car.subaru.subarucan import create_es_lkas_alert, create_es_static_
 from opendbc.car.subaru.values import CAR, DBC, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
-from opendbc.sunnypilot.car.interfaces import _initialize_stop_and_go
+from opendbc.sunnypilot.car.interfaces import _initialize_stop_and_go, _initialize_subaru_comfort
+from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP, SubaruSafetyFlagsSP
+from opendbc.sunnypilot.car.subaru.comfort import COMFORT_BURST_LEN, COMFORT_DEADLINE_FRAMES, COMFORT_PRESS_FRAMES, \
+  COMFORT_PRESS_TRIES, COMFORT_SETTLE_FRAMES, ComfortCarController
 
 
 class TestSubaruFingerprint(unittest.TestCase):
@@ -254,6 +257,17 @@ class TestSubaruStopAndGoInitialization(unittest.TestCase):
         self.assertEqual((cp_sp.flags, cp_sp.safetyParam), (0, 0))
         self.assertFalse(cp.autoResumeSng)
 
+  def test_comfort_opt_in_sets_controller_and_panda_flags(self):
+    params = {"SubaruAutoVehicleHold": "1", "SubaruStopStartOff": "1"}
+    for platform, supported in ((CAR.SUBARU_CROSSTREK_2025, True), (CAR.SUBARU_OUTBACK, False)):
+      with self.subTest(platform=platform):
+        cp = CarInterface.get_non_essential_params(platform)
+        cp_sp = SimpleNamespace(flags=0, safetyParam=0)
+        _initialize_subaru_comfort(cp, cp_sp, params)
+        expected = (SubaruFlagsSP.AUTO_VEHICLE_HOLD | SubaruFlagsSP.STOP_START_OFF,
+                    SubaruSafetyFlagsSP.AUTO_VEHICLE_HOLD | SubaruSafetyFlagsSP.STOP_START_OFF) if supported else (0, 0)
+        self.assertEqual((cp_sp.flags, cp_sp.safetyParam), expected)
+
 
 class TestSubaruAlphaLongitudinal(unittest.TestCase):
   def test_params_keep_unverified_alpha_long_disabled(self):
@@ -382,6 +396,158 @@ class TestSubaruLkasAlert(unittest.TestCase):
     self.assertEqual(sent_alerts(20), [])
     ci.update([(int(1e8), [self.packer.make_can_msg("ES_LKAS_Alert", CanBus.camera, {"LKAS_Alert_Msg": 1})])])
     self.assertEqual(sent_alerts(20), [0x3C4, 0x3C4])
+
+
+COMFORT_CONTROL_TEMPLATE = {"CHECKSUM": 0, "COUNTER": 3, "Signal1": 0, "AVH_REQUEST": 0, "Signal2": 1, "Signal3": 0,
+                            "Signal4": 0, "Signal5": 0x0E, "Signal6": 0x0A}  # our 2024 Crosstrek, engine running
+DASHLIGHTS_TEMPLATE = {"CHECKSUM": 0, "COUNTER": 3, "Signal1": 0, "Signal2": 0x99, "UNITS": 0, "Signal3": 0x23, "ICY_ROAD": 3,
+                       "Signal4": 0x21, "Signal5": 0x96, "SEATBELT_FL": 1, "Signal6": 0, "LEFT_BLINKER": 0, "RIGHT_BLINKER": 0,
+                       "Signal7": 0, "STOP_START": 0, "Signal8": 0, "Signal9": 0}
+
+
+class FakeComfortCar:
+  """The CarState fields the comfort requests read, answering like the measured car: AVH about 90 ms after a
+  request, and the start-stop shutoff toggling once per gap between the car's own 10 Hz Dashlights frames that
+  carries a press (so a press straddling one of the car's frames lands as two presses)."""
+  AVH_ANSWER_DELAY = 9
+  CAR_PERIOD = 10
+  STOP_START_ANSWER_DELAY = 3
+
+  def __init__(self, avh_active=None, stop_start_disabled=None, comfort_control=True, dashlights=True):
+    self.avh_active = avh_active
+    self.stop_start_disabled = stop_start_disabled
+    self.comfort_control_msg = dict(COMFORT_CONTROL_TEMPLATE) if comfort_control else None
+    self.dashlights_msg = dict(DASHLIGHTS_TEMPLATE) if dashlights else None
+    self.avh_deaf = self.stop_start_deaf = False
+    self.avh_answer_in = self.stop_start_answer_in = None
+    self.presses = 0
+    self.gap_pressed = False
+    self.tick = 0
+
+  def step(self, sent):
+    addrs = [addr for addr, _, _ in sent]
+    if 0x6BB in addrs and not self.avh_deaf and self.avh_answer_in is None:
+      self.avh_answer_in = self.AVH_ANSWER_DELAY
+    if self.avh_answer_in is not None:
+      self.avh_answer_in -= 1
+      if self.avh_answer_in == 0:
+        self.avh_active, self.avh_answer_in = True, None
+
+    self.gap_pressed |= 0x390 in addrs
+    self.tick += 1
+    if self.stop_start_answer_in is not None:
+      self.stop_start_answer_in -= 1
+      if self.stop_start_answer_in == 0:
+        self.stop_start_disabled, self.stop_start_answer_in = not self.stop_start_disabled, None
+    if self.dashlights_msg is not None and self.tick % self.CAR_PERIOD == 0:
+      if self.gap_pressed:
+        self.presses += 1
+        if not self.stop_start_deaf:
+          self.stop_start_answer_in = self.STOP_START_ANSWER_DELAY
+        self.gap_pressed = False
+      self.dashlights_msg["COUNTER"] = (self.dashlights_msg["COUNTER"] + 1) % 16
+
+
+class TestSubaruComfort(unittest.TestCase):
+  """Auto Vehicle Hold on and auto start-stop off, requested once at the start of a drive."""
+
+  def setUp(self):
+    self.packer = CANPacker(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt])
+
+  @staticmethod
+  def controller(avh=False, stop_start=False, platform=CAR.SUBARU_CROSSTREK_2025):
+    cp = CarInterface.get_non_essential_params(platform)
+    flags = (SubaruFlagsSP.AUTO_VEHICLE_HOLD if avh else 0) | (SubaruFlagsSP.STOP_START_OFF if stop_start else 0)
+    return ComfortCarController(cp, SimpleNamespace(flags=flags))
+
+  def run_frames(self, cc, car, frames=3000, start=COMFORT_SETTLE_FRAMES):
+    sent = []
+    for frame in range(start, start + frames):
+      step = cc.create_comfort(self.packer, car, frame)
+      sent += step
+      car.step(step)
+    return sent
+
+  def decode(self, sent, name):
+    parser = CANParser(DBC[CAR.SUBARU_CROSSTREK_2025][Bus.pt], [(name, float("nan"))], CanBus.alt)
+    out = []
+    for i, msg in enumerate(sent):
+      parser.update([(i, [msg])])
+      out.append(dict(parser.vl[name]))
+    return out
+
+  def test_nothing_without_opt_in_or_on_other_platforms(self):
+    car = FakeComfortCar(avh_active=False, stop_start_disabled=False)
+    self.assertEqual(self.run_frames(self.controller(), car), [])
+    self.assertEqual(self.run_frames(self.controller(True, True, CAR.SUBARU_OUTBACK), car), [])
+
+  def test_avh_asks_once_copying_the_cars_frame(self):
+    car = FakeComfortCar(avh_active=False)
+    sent = self.run_frames(self.controller(avh=True), car)
+    self.assertEqual(len(sent), COMFORT_BURST_LEN)
+    self.assertTrue(car.avh_active)
+    self.assertTrue(all(addr == 0x6BB and bus == CanBus.alt for addr, _, bus in sent))
+    for msg in self.decode(sent, "Comfort_Control"):
+      self.assertEqual(msg["AVH_REQUEST"], 2)
+      self.assertEqual(msg["Signal6"], 0x0A)  # copied from the car, not NylonDiamond's 0x00
+    self.assertTrue(all(bytes(dat)[3:] == bytes.fromhex("0100000e0a") for _, dat, _ in sent))
+
+  def test_avh_waits_for_real_messages(self):
+    self.assertEqual(self.run_frames(self.controller(avh=True), FakeComfortCar(avh_active=None)), [])
+    self.assertEqual(self.run_frames(self.controller(avh=True), FakeComfortCar(avh_active=False, comfort_control=False)), [])
+
+  def test_avh_nothing_when_already_on_and_never_fights_the_driver(self):
+    self.assertEqual(self.run_frames(self.controller(avh=True), FakeComfortCar(avh_active=True)), [])
+    cc, car = self.controller(avh=True), FakeComfortCar(avh_active=False)
+    self.run_frames(cc, car)
+    car.avh_active = False  # driver switches it off on the touchscreen
+    self.assertEqual(self.run_frames(cc, car, frames=1000, start=COMFORT_SETTLE_FRAMES + 3000), [])
+
+  def test_avh_retries_a_missed_request(self):
+    car = FakeComfortCar(avh_active=False)
+    car.avh_deaf = True
+    sent = self.run_frames(self.controller(avh=True), car)
+    self.assertGreater(len(sent), COMFORT_BURST_LEN)
+
+  def test_stop_start_lands_as_exactly_one_press_from_any_phase(self):
+    for phase in range(FakeComfortCar.CAR_PERIOD):
+      with self.subTest(phase=phase):
+        car = FakeComfortCar(stop_start_disabled=False)
+        for _ in range(phase):
+          car.step([])
+        sent = self.run_frames(self.controller(stop_start=True), car)
+        self.assertEqual(car.presses, 1)
+        self.assertTrue(car.stop_start_disabled)
+        self.assertEqual(len(sent), COMFORT_PRESS_FRAMES)
+        for msg in self.decode(sent, "Dashlights"):
+          self.assertEqual((msg["STOP_START"], msg["SEATBELT_FL"], msg["Signal2"]), (1, 1, 0x99))
+
+  def test_stop_start_gives_up_and_leaves_the_driver_alone(self):
+    car = FakeComfortCar(stop_start_disabled=False)
+    car.stop_start_deaf = True
+    sent = self.run_frames(self.controller(stop_start=True), car)
+    self.assertEqual(car.presses, COMFORT_PRESS_TRIES)
+    self.assertEqual(len(sent), COMFORT_PRESS_TRIES * COMFORT_PRESS_FRAMES)
+
+    cc, car = self.controller(stop_start=True), FakeComfortCar(stop_start_disabled=False)
+    self.run_frames(cc, car)
+    car.stop_start_disabled, car.presses = False, 0  # driver re-arms it
+    self.assertEqual(self.run_frames(cc, car, start=COMFORT_SETTLE_FRAMES + 3000), [])
+
+  def test_settle_and_deadline(self):
+    car = FakeComfortCar(avh_active=False, stop_start_disabled=False)
+    self.assertEqual(self.run_frames(self.controller(True, True), car, frames=COMFORT_SETTLE_FRAMES, start=0), [])
+    car.avh_deaf = car.stop_start_deaf = True
+    cc = self.controller(True, True)
+    self.assertNotEqual(self.run_frames(cc, car, frames=COMFORT_DEADLINE_FRAMES - COMFORT_SETTLE_FRAMES), [])
+    self.assertEqual(self.run_frames(cc, car, start=COMFORT_DEADLINE_FRAMES + 1), [])
+
+  def test_optional_messages_do_not_invalidate_can(self):
+    cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    pt = CarState.get_can_parsers(cp, None)[Bus.pt]
+    self.assertTrue({"Comfort_Control", "Comfort_Status", "Engine_Stop_Start"} <= {st.name for st in pt.message_states.values()})
+    self.assertTrue(all(st.ignore_alive for st in pt.message_states.values()
+                        if st.name in ("Comfort_Control", "Comfort_Status", "Engine_Stop_Start")))
 
 
 class TestSubaruSurroundings(unittest.TestCase):
