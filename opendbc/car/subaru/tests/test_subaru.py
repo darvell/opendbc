@@ -33,14 +33,15 @@ class TestSubaruAngleController(unittest.TestCase):
   def setUp(self):
     self.controller = CarController.__new__(CarController)
     self.controller.p = cast(CarControllerParams, SimpleNamespace(
-      STEER_OVERRIDE_TORQUE_HIGH=200,
-      STEER_OVERRIDE_TORQUE_LOW=150,
       ACTIVE_ANGLE_MAX=190,
       ANGLE_INACTIVE_MAX=650,
+      STEER_OVERRIDE_TORQUE_HIGH=150,
+      STEER_OVERRIDE_TORQUE_LOW=100,
       ANGLE_LIMITS=SimpleNamespace(MAX_ANGLE_RATE=100.),
     ))
     self.controller.apply_angle_last = 0.0
     self.controller.driver_override = False
+    self.controller.angle_override_confirm_frames = 0
     self.controller.packer = cast(CANPacker, object())
     self.controller.VM = cast(VehicleModel, object())
     self.controller.angle_filter = FirstOrderFilter(0.0, 0.0, DT_CTRL)
@@ -127,20 +128,30 @@ class TestSubaruAngleController(unittest.TestCase):
   def test_driver_override_hysteresis(self, create_angle_msg, _apply_limits, _max_delta, _max_angle):
     cc = self.control(lat_active=True, angle=20)
 
-    self.step(cc, self.state(measured=15, torque=201))
-    create_angle_msg.assert_called_with(self.controller.packer, 15.0, False)
-    self.assertTrue(self.controller.driver_override)
+    self.step(cc, self.state(measured=15, torque=151))
+    create_angle_msg.assert_called_with(self.controller.packer, 20, True)
+    self.assertFalse(self.controller.driver_override)
 
-    self.step(cc, self.state(measured=16, torque=175))
+    self.step(cc, self.state(measured=16, torque=151))
     create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
     self.assertTrue(self.controller.driver_override)
 
-    # Released: one extra inactive frame, then the request resumes.
-    self.step(cc, self.state(measured=16, torque=149))
+    self.step(cc, self.state(measured=16, torque=125))
+    create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
+    self.assertTrue(self.controller.driver_override)
+
+    # Released: one inactive frame below the low band, then the request resumes.
+    self.step(cc, self.state(measured=16, torque=99))
     create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
     self.assertFalse(self.controller.driver_override)
-    self.step(cc, self.state(measured=16, torque=149))
+    self.step(cc, self.state(measured=16, torque=99))
     create_angle_msg.assert_called_with(self.controller.packer, 20, True)
+
+  def test_crosstrek_override_bands_match_measured_input(self):
+    cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    self.assertEqual(cp.carFingerprint, CAR.SUBARU_CROSSTREK_2025)
+    self.assertEqual(CarControllerParams(cp).STEER_OVERRIDE_TORQUE_HIGH, 150)
+    self.assertEqual(CarControllerParams(cp).STEER_OVERRIDE_TORQUE_LOW, 100)
 
   def test_speed_dependent_longitudinal_commands(self):
     low = self.controller.longitudinal_commands(1.0, 5.0)

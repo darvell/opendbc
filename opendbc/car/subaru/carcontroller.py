@@ -33,6 +33,7 @@ class CarController(CarControllerBase, SnGCarController, ComfortCarController):
     self.apply_torque_last = 0
     self.apply_angle_last = 0.0
     self.driver_override = False
+    self.angle_override_confirm_frames = 0
     self.lat_eligible_last = False
 
     self.cruise_button_prev = 0
@@ -79,10 +80,16 @@ class CarController(CarControllerBase, SnGCarController, ComfortCarController):
 
   def lateral_angle(self, CC, CS):
     abs_torque = abs(CS.out.steeringTorque)
-    if abs_torque > self.p.STEER_OVERRIDE_TORQUE_HIGH:
-      self.driver_override = True
-    elif abs_torque < self.p.STEER_OVERRIDE_TORQUE_LOW:
-      self.driver_override = False
+    if self.driver_override:
+      if abs_torque < self.p.STEER_OVERRIDE_TORQUE_LOW:
+        self.driver_override = False
+    elif abs_torque > self.p.STEER_OVERRIDE_TORQUE_HIGH:
+      self.angle_override_confirm_frames += 1
+      if self.angle_override_confirm_frames >= 2:
+        self.driver_override = True
+        self.angle_override_confirm_frames = 0
+    else:
+      self.angle_override_confirm_frames = 0
 
     lat_active = self.panda_allows_lateral(CC, CS) and not self.driver_override
     # Do not keep LKAS_Request asserted while the wheel is already beyond the

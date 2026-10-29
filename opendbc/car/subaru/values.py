@@ -37,9 +37,15 @@ class CarControllerParams:
     self.STEER_DRIVER_MULTIPLIER = 50  # weight driver torque heavily
     self.STEER_DRIVER_FACTOR = 1       # from dbc
 
-    # Driver override hysteresis prevents request-bit chatter around the threshold.
+    # Driver override hysteresis prevents request-bit chatter around the threshold. Crosstrek parking-lot
+    # input and our route data show sustained 145-180 torque while the driver is already correcting; the old
+    # 200 threshold missed that. Use StarPilot's measured 150/100 bands, with two-frame confirmation in the
+    # controller so one sensor spike cannot drop the required 50 Hz stream.
     self.STEER_OVERRIDE_TORQUE_HIGH = 200
     self.STEER_OVERRIDE_TORQUE_LOW = 150
+    if CP.carFingerprint == CAR.SUBARU_CROSSTREK_2025:
+      self.STEER_OVERRIDE_TORQUE_HIGH = 150
+      self.STEER_OVERRIDE_TORQUE_LOW = 100
 
     if CP.flags & SubaruFlags.GLOBAL_GEN2:
       self.STEER_MAX = 1500
