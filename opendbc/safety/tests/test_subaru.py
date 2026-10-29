@@ -425,6 +425,7 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
       (30.0, 30.0, 10.0, -5.0, True),                                   # highway target step
       (3.0, 3.0, 0.0, 120.0, True),                                     # low-speed large target
       (13.24, 13.24, 1.3 * bound(13.24), 0.0, False),                   # engaging beyond Panda's own bound
+      (27.0, 27.0, 0.0, 0.0, None),                                     # engaging while the driver turns the wheel
     )
     for start_speed, end_speed, measured, desired, always_requests in cases:
       for sign in (-1, 1):
@@ -437,6 +438,9 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
           for _ in range(6):
             self._rx(self._angle_meas_msg(angle))
           angle_messages = requests = engaged_messages = 0
+          # The driver turns the wheel at 100 deg/s through each engagement, and Panda has the
+          # next Steering_2 sample before CarState does.
+          driver_turning = always_requests is None
           for frame in range(200):
             speed = float(np.interp(frame, [20, 120], [start_speed, end_speed]))
             lat_active = frame not in (0, 100)
@@ -444,7 +448,8 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
             cc.actuators.steeringAngleDeg = sign * desired
             ci.CS.out = structs.CarState(vEgo=speed, vEgoRaw=speed, steeringAngleDeg=angle)
             ci.CS.out.cruiseState.available = ci.CS.out.cruiseState.enabled = lat_active
-            self._rx(self._angle_meas_msg(angle))
+            turning = driver_turning and (frame < 20 or 100 <= frame < 120)
+            self._rx(self._angle_meas_msg(angle + (1.0 if turning else 0.0)))
             self._reset_speed_measurement(speed)
             self.safety.set_controls_allowed(lat_active)
             self.safety.set_timer(frame * 10000)
@@ -458,9 +463,11 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
                 self.assertTrue(lat_active or not request)
                 self.assertTrue(self._tx(libsafety_py.make_CANPacket(addr, bus, dat)), f"frame {frame}")
             # The EPS tracks the accepted command; with the request clear the command echoes the wheel.
-            angle = actuators.steeringAngleDeg
+            angle = angle + 1.0 if turning else actuators.steeringAngleDeg
           self.assertEqual(angle_messages, 100)
-          self.assertEqual(requests, engaged_messages if always_requests else 0)
+          if always_requests is not None:
+            # Each engagement starts with one extra inactive frame.
+            self.assertEqual(requests, engaged_messages - 2 if always_requests else 0)
 
 
 class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin, TestSubaruAngleSafetyBase):

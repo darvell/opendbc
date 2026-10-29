@@ -43,6 +43,7 @@ class TestSubaruAngleController(unittest.TestCase):
     self.controller.VM = cast(VehicleModel, object())
     self.controller.angle_filter = FirstOrderFilter(0.0, 0.0, DT_CTRL)
     self.controller.CP = SimpleNamespace(alternativeExperience=0, openpilotLongitudinalControl=False)
+    self.controller.lat_eligible_last = True  # past the extra inactive frame sent after engaging
 
   def step(self, cc, cs):
     # These tests cover request gating and limits; the low-speed target filter is covered separately.
@@ -69,6 +70,21 @@ class TestSubaruAngleController(unittest.TestCase):
     self.step(self.control(lat_active=True, angle=-20, enabled=False), self.state(measured=15))
     create_angle_msg.assert_called_once_with(self.controller.packer, 15.0, False)
     self.assertEqual(self.controller.apply_angle_last, 15.0)
+
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_vm", return_value=1000.)
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_delta_vm", return_value=100.)
+  @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
+  @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
+  def test_extra_inactive_frame_after_engaging(self, create_angle_msg, *_):
+    self.controller.p.ANGLE_LIMITS = SimpleNamespace(MAX_ANGLE_RATE=100.)
+    self.controller.lat_eligible_last = False
+    for measured, expected in ((10.0, (10.0, False)), (11.0, (12, True)), (12.0, (12, True))):
+      self.step(self.control(angle=12), self.state(measured=measured))
+      create_angle_msg.assert_called_with(self.controller.packer, *expected)
+    # Any loss of eligibility re-arms the extra frame.
+    self.step(self.control(angle=12), self.state(measured=12, brake=True))
+    self.step(self.control(angle=13), self.state(measured=12))
+    create_angle_msg.assert_called_with(self.controller.packer, 12.0, False)
 
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_full_lock_forces_inactive_request(self, create_angle_msg):
@@ -100,6 +116,7 @@ class TestSubaruAngleController(unittest.TestCase):
       with self.subTest(alt_exp=alt_exp, enabled=enabled, **state):
         self.controller.CP.alternativeExperience = alt_exp
         self.controller.apply_angle_last = 10.0
+        self.controller.lat_eligible_last = True
         self.step(self.control(angle=12, enabled=enabled), self.state(measured=10, **state))
         create_angle_msg.assert_called_with(self.controller.packer, 12 if expected else 10.0, expected)
 
@@ -119,9 +136,12 @@ class TestSubaruAngleController(unittest.TestCase):
     create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
     self.assertTrue(self.controller.driver_override)
 
+    # Released: one extra inactive frame, then the request resumes.
+    self.step(cc, self.state(measured=16, torque=149))
+    create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
+    self.assertFalse(self.controller.driver_override)
     self.step(cc, self.state(measured=16, torque=149))
     create_angle_msg.assert_called_with(self.controller.packer, 20, True)
-    self.assertFalse(self.controller.driver_override)
 
   def test_speed_dependent_longitudinal_commands(self):
     low = self.controller.longitudinal_commands(1.0, 5.0)
@@ -180,6 +200,7 @@ class TestSubaruLowSpeedAngleFilter(unittest.TestCase):
     ci.update([])
     ci.CS.out = structs.CarState(vEgo=speed, vEgoRaw=speed)
     ci.CS.out.cruiseState.available = ci.CS.out.cruiseState.enabled = True
+    ci.CC.lat_eligible_last = True  # skip the extra inactive frame sent after engaging
     return ci
 
   @staticmethod

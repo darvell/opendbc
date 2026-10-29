@@ -31,6 +31,7 @@ class CarController(CarControllerBase, SnGCarController):
     self.apply_torque_last = 0
     self.apply_angle_last = 0.0
     self.driver_override = False
+    self.lat_eligible_last = False
 
     self.cruise_button_prev = 0
     self.steer_rate_counter = 0
@@ -87,6 +88,14 @@ class CarController(CarControllerBase, SnGCarController):
     # requested angle itself is clamped to the ceiling.
     if lat_active and abs(CS.out.steeringAngleDeg) >= self.p.ACTIVE_ANGLE_MAX:
       lat_active = False
+
+    # Before Panda allows control it anchors its jerk check to its newest angle sample, which can be newer
+    # than CarState when the wheel is moving. Once allowed, an inactive frame anchors it to our echo instead,
+    # so send one more inactive frame before requesting (commaai/opendbc#2864). Without it, engaging while the
+    # wheel moves gets every frame rejected until the EPS faults (cd6dab3f3a4ab8d8/0000009b--b0f8c79194/4).
+    lat_eligible = lat_active
+    lat_active = lat_active and self.lat_eligible_last
+    self.lat_eligible_last = lat_eligible
 
     if lat_active:
       apply_angle = apply_steer_angle_limits_vm(self.angle_filter.x, self.apply_angle_last, CS.out.vEgoRaw,
