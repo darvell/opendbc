@@ -243,7 +243,9 @@ class CAR(Platforms):
   )
   SUBARU_CROSSTREK_2025 = SubaruGen2PlatformConfig(
     [SubaruCarDocs("Subaru Crosstrek 2024-25", "All", car_parts=CarParts.common([CarHarness.subaru_d]))],
-    CarSpecs(mass=1529, wheelbase=2.67, steerRatio=17),
+    # paramsd converges on 14.7 on our 2024 Crosstrek (routes 24-2a); 17 overstated the ratio by 16%, which
+    # also loosened the shared Panda lateral-accel envelope by the same factor.
+    CarSpecs(mass=1529, wheelbase=2.67, steerRatio=14.7),
     flags=SubaruFlags.LKAS_ANGLE,
   )
 

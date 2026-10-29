@@ -48,6 +48,11 @@ class CarInterface(CarInterfaceBase):
     if ret.flags & SubaruFlags.LKAS_ANGLE:
       ret.steerControlType = structs.CarParams.SteerControlType.angle
 
+      if candidate == CAR.SUBARU_CROSSTREK_2025:
+        # Only a seed: lagd starts at steerActuatorDelay + 0.2 s and learns. Our 2024 Crosstrek
+        # learned 0.258 s total (9/9 valid blocks), so 0.06 seeds it on the answer instead of 0.3.
+        ret.steerActuatorDelay = 0.06
+
     elif candidate == CAR.SUBARU_ASCENT:
       ret.steerActuatorDelay = 0.3  # end-to-end angle controller
       ret.lateralTuning.init('pid')

@@ -227,7 +227,7 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
   // Match the validated Gen3 Crosstrek vehicle model used by the Python controller.
   const AngleSteeringParams SUBARU_ANGLE_STEERING_PARAMS = {
     .slip_factor = -0.0006281955319491566,
-    .steer_ratio = 17.0,
+    .steer_ratio = 14.7,
     .wheelbase = 2.6700000762939453,
   };
 
