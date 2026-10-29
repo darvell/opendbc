@@ -25,6 +25,9 @@ class CarControllerParams:
   )
   # With LKAS_Request clear, the command must still echo the measured full-lock angle.
   ANGLE_INACTIVE_MAX = 650
+  # Low-speed angle target smoothing time constant (s): 0.3 s up to 11 mph, 0.1 s at 22 mph, none from 45 mph.
+  ANGLE_FILTER_SPEED_BP = [5., 10., 20.]
+  ANGLE_FILTER_TAU_V = [0.3, 0.1, 0.]
 
   def __init__(self, CP):
     self.STEER_STEP = 2                # how often we update the steer cmd

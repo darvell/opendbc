@@ -4,7 +4,8 @@ from typing import cast
 from unittest.mock import patch
 
 from opendbc.can import CANPacker, CANParser
-from opendbc.car import Bus, structs
+from opendbc.car import DT_CTRL, Bus, structs
+from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.fingerprints import FW_VERSIONS
@@ -39,6 +40,12 @@ class TestSubaruAngleController(unittest.TestCase):
     self.controller.driver_override = False
     self.controller.packer = cast(CANPacker, object())
     self.controller.VM = cast(VehicleModel, object())
+    self.controller.angle_filter = FirstOrderFilter(0.0, 0.0, DT_CTRL)
+
+  def step(self, cc, cs):
+    # These tests cover request gating and limits; the low-speed target filter is covered separately.
+    self.controller.angle_filter.x = cc.actuators.steeringAngleDeg
+    return self.controller.lateral_angle(cc, cs)
 
   @staticmethod
   def control(lat_active=True, angle=0.0, enabled=True):
@@ -50,45 +57,41 @@ class TestSubaruAngleController(unittest.TestCase):
 
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_inactive_tracks_measured_angle_through_full_lock(self, create_angle_msg):
-    self.controller.lateral_angle(self.control(lat_active=False, angle=0), self.state(measured=500))
+    self.step(self.control(lat_active=False, angle=0), self.state(measured=500))
     create_angle_msg.assert_called_once_with(self.controller.packer, 500.0, False)
     self.assertEqual(self.controller.apply_angle_last, 500.0)
 
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_mads_only_state_keeps_inactive_angle_stream(self, create_angle_msg):
-    self.controller.lateral_angle(self.control(lat_active=True, angle=-20, enabled=False), self.state(measured=15))
+    self.step(self.control(lat_active=True, angle=-20, enabled=False), self.state(measured=15))
     create_angle_msg.assert_called_once_with(self.controller.packer, 15.0, False)
     self.assertEqual(self.controller.apply_angle_last, 15.0)
 
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_full_lock_forces_inactive_request(self, create_angle_msg):
-    self.controller.lateral_angle(self.control(lat_active=True, angle=-190), self.state(measured=-205))
+    self.step(self.control(lat_active=True, angle=-190), self.state(measured=-205))
     create_angle_msg.assert_called_once_with(self.controller.packer, -205.0, False)
     self.assertEqual(self.controller.apply_angle_last, -205.0)
 
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_vm", return_value=1000.)
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_delta_vm", return_value=100.)
   @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
-  def test_driver_override_hysteresis(self, create_angle_msg, _apply_limits):
+  def test_driver_override_hysteresis(self, create_angle_msg, _apply_limits, _max_delta, _max_angle):
+    self.controller.p.ANGLE_LIMITS = SimpleNamespace(MAX_ANGLE_RATE=100.)
     cc = self.control(lat_active=True, angle=20)
 
-    self.controller.lateral_angle(cc, self.state(measured=15, torque=201))
+    self.step(cc, self.state(measured=15, torque=201))
     create_angle_msg.assert_called_with(self.controller.packer, 15.0, False)
     self.assertTrue(self.controller.driver_override)
 
-    self.controller.lateral_angle(cc, self.state(measured=16, torque=175))
+    self.step(cc, self.state(measured=16, torque=175))
     create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
     self.assertTrue(self.controller.driver_override)
 
-    self.controller.lateral_angle(cc, self.state(measured=16, torque=149))
+    self.step(cc, self.state(measured=16, torque=149))
     create_angle_msg.assert_called_with(self.controller.packer, 20, True)
     self.assertFalse(self.controller.driver_override)
-
-  @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
-  @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
-  def test_low_speed_deadzone_suppresses_small_angle_changes(self, create_angle_msg, _apply_limits):
-    self.controller.apply_angle_last = 10.0
-    self.controller.lateral_angle(self.control(angle=12), self.state(measured=10, speed=2))
-    create_angle_msg.assert_called_once_with(self.controller.packer, 10.0, True)
 
   def test_speed_dependent_longitudinal_commands(self):
     low = self.controller.longitudinal_commands(1.0, 5.0)
@@ -135,6 +138,55 @@ class TestSubaruAngleController(unittest.TestCase):
     self.assertEqual(rpm, CarControllerParams.BRAKE_RPM_V[0])
     self.assertGreaterEqual(brake, 225)
     self.assertLessEqual(brake, 240)
+
+
+class TestSubaruLowSpeedAngleFilter(unittest.TestCase):
+  """Low-speed steering is smoothed by a low pass filter instead of held still by a deadzone."""
+
+  @staticmethod
+  def make_interface(speed):
+    cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    ci = CarInterface(cp, CarInterface.get_non_essential_params_sp(cp, CAR.SUBARU_CROSSTREK_2025))
+    ci.update([])
+    ci.CS.out = structs.CarState(vEgo=speed, vEgoRaw=speed)
+    return ci
+
+  @staticmethod
+  def steer(ci, target, frames, lat_active=True):
+    cc = structs.CarControl(enabled=lat_active, latActive=lat_active)
+    cc.actuators.steeringAngleDeg = target
+    return [ci.CC.update(cc.as_reader(), structs.CarControlSP(), ci.CS, frame * 10_000_000)[0].steeringAngleDeg for frame in range(frames)]
+
+  def test_filter_time_constant_follows_speed(self):
+    for speed, tau in ((0., 0.3), (5., 0.3), (7.5, 0.2), (10., 0.1), (15., 0.05), (20., 0.), (30., 0.)):
+      with self.subTest(speed=speed):
+        ci = self.make_interface(speed)
+        self.steer(ci, 1.0, 1)
+        self.assertAlmostEqual(ci.CC.angle_filter.x, DT_CTRL / (tau + DT_CTRL))
+
+  def test_small_request_reaches_the_wheel_at_low_speed(self):
+    # The old 6 deg deadzone at 3 m/s never let a 4 deg request through.
+    out = self.steer(self.make_interface(3.0), 4.0, 300)
+    self.assertGreater(out[0], 0.)
+    self.assertAlmostEqual(out[-1], 4.0, places=1)
+
+  def test_low_speed_request_ramps_without_jumps(self):
+    out = self.steer(self.make_interface(3.0), 4.0, 300)
+    steps = [b - a for a, b in zip(out, out[1:], strict=False)]
+    self.assertTrue(all(s >= 0. for s in steps))
+    self.assertLess(max(steps), 0.5)
+
+  def test_filter_updates_between_steering_messages(self):
+    ci = self.make_interface(3.0)
+    out = self.steer(ci, 1.0, 3)
+    # Steering is sent every other frame, but the filter integrates all three control frames.
+    self.assertEqual(out[0], out[1])
+    self.assertAlmostEqual(out[2], 1.0 - (0.3 / 0.31) ** 3)
+
+  def test_filter_follows_request_while_inactive(self):
+    ci = self.make_interface(3.0)
+    self.steer(ci, 12.0, 1, lat_active=False)
+    self.assertEqual(ci.CC.angle_filter.x, 12.0)
 
 
 class TestSubaruStopAndGo(unittest.TestCase):

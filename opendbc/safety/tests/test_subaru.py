@@ -3,8 +3,11 @@ import enum
 import unittest
 import numpy as np
 
+from opendbc.car import structs
+from opendbc.car.lateral import get_max_angle_vm
 from opendbc.car.subaru.carcontroller import CarController
-from opendbc.car.subaru.values import SubaruSafetyFlags
+from opendbc.car.subaru.interface import CarInterface
+from opendbc.car.subaru.values import CAR, CarControllerParams, SubaruSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety.tests.libsafety import libsafety_py
@@ -367,6 +370,57 @@ class TestSubaruGen2AngleStockLongitudinalSafety(TestSubaruStockLongitudinalSafe
   RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS_ANGLE, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
                                                SubaruMsg.ES_Infotainment)}
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE)
+
+  def test_controller_angle_stream_is_never_rejected(self):
+    # The camera's 0x124 is blocked, so every rejected replacement frame is a gap the EPS faults on.
+    # Drive the real controller through Panda safety across engagement edges, curves above the
+    # lateral-accel bound, speed changes that shrink the bound, and large target steps.
+    def bound(speed):
+      return get_max_angle_vm(speed, self.VM, CarControllerParams)
+
+    cases = (
+      # start speed, end speed, initial measured angle, desired angle, whether every engaged frame can request
+      (13.24, 13.24, 1.08 * bound(13.24), 0.97 * bound(13.24), True),  # engage in a curve above the controller's bound
+      (13.0, 13.5, bound(13.0), bound(13.0), True),                     # speed increase lowers the bound at the limit
+      (10.0, 14.0, bound(10.0), bound(10.0), True),                     # 4 m/s^2 (beyond this car) at the limit
+      (30.0, 30.0, 10.0, -5.0, True),                                   # highway target step
+      (3.0, 3.0, 0.0, 120.0, True),                                     # low-speed large target
+      (13.24, 13.24, 1.3 * bound(13.24), 0.0, False),                   # engaging beyond Panda's own bound
+    )
+    for start_speed, end_speed, measured, desired, always_requests in cases:
+      for sign in (-1, 1):
+        with self.subTest(start_speed=start_speed, end_speed=end_speed, measured=measured, desired=desired, sign=sign):
+          self.setUp()
+          cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+          ci = CarInterface(cp, CarInterface.get_non_essential_params_sp(cp, CAR.SUBARU_CROSSTREK_2025))
+          ci.update([])
+          angle = sign * measured
+          for _ in range(6):
+            self._rx(self._angle_meas_msg(angle))
+          angle_messages = requests = engaged_messages = 0
+          for frame in range(200):
+            speed = float(np.interp(frame, [20, 120], [start_speed, end_speed]))
+            lat_active = frame not in (0, 100)
+            cc = structs.CarControl(enabled=lat_active, latActive=lat_active)
+            cc.actuators.steeringAngleDeg = sign * desired
+            ci.CS.out = structs.CarState(vEgo=speed, vEgoRaw=speed, steeringAngleDeg=angle)
+            self._rx(self._angle_meas_msg(angle))
+            self._reset_speed_measurement(speed)
+            self.safety.set_controls_allowed(lat_active)
+            self.safety.set_timer(frame * 10000)
+            actuators, messages = ci.CC.update(cc.as_reader(), structs.CarControlSP(), ci.CS, frame * 10_000_000)
+            for addr, dat, bus in messages:
+              if addr == SubaruMsg.ES_LKAS_ANGLE:
+                request = bool(dat[1] & 0x10)
+                angle_messages += 1
+                engaged_messages += lat_active
+                requests += request
+                self.assertTrue(lat_active or not request)
+                self.assertTrue(self._tx(libsafety_py.make_CANPacket(addr, bus, dat)), f"frame {frame}")
+            # The EPS tracks the accepted command; with the request clear the command echoes the wheel.
+            angle = actuators.steeringAngleDeg
+          self.assertEqual(angle_messages, 100)
+          self.assertEqual(requests, engaged_messages if always_requests else 0)
 
 
 class TestSubaruGen2AngleLongitudinalSafety(SubaruDynamicLongitudinalSafetyMixin, TestSubaruAngleSafetyBase):

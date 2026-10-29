@@ -1,7 +1,9 @@
 import numpy as np
 from opendbc.can import CANPacker
-from opendbc.car import Bus, make_tester_present_msg
-from opendbc.car.lateral import apply_center_deadzone, apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance
+from opendbc.car import DT_CTRL, Bus, make_tester_present_msg, rate_limit
+from opendbc.car.common.filter_simple import FirstOrderFilter
+from opendbc.car.lateral import apply_driver_steer_torque_limits, apply_steer_angle_limits_vm, common_fault_avoidance, \
+                                get_max_angle_delta_vm, get_max_angle_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.subaru import subarucan
 from opendbc.car.subaru.values import CAR, DBC, GLOBAL_ES_ADDR, CanBus, CarControllerParams, SubaruFlags
@@ -36,7 +38,20 @@ class CarController(CarControllerBase, SnGCarController):
     self.packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
 
     if CP.flags & SubaruFlags.LKAS_ANGLE:
-      self.VM = VehicleModel(CP)
+      # Limit with the same fixed vehicle model Panda safety uses, not learned or per-car params.
+      self.VM = VehicleModel(get_safety_CP())
+      self.angle_filter = FirstOrderFilter(0.0, CarControllerParams.ANGLE_FILTER_TAU_V[0], DT_CTRL)
+
+  def update_angle_filter(self, CC, CS):
+    # The wheel hunts at low speed (coarse angle sensing/EPS actuation). A low pass filter on the
+    # target smooths that without the hold-then-jump a center deadzone produces. Runs every control
+    # frame, including frames that send no steering message. From commaai/opendbc#3795.
+    if CC.latActive:
+      self.angle_filter.update_alpha(float(np.interp(CS.out.vEgo, CarControllerParams.ANGLE_FILTER_SPEED_BP,
+                                                     CarControllerParams.ANGLE_FILTER_TAU_V)))
+      self.angle_filter.update(CC.actuators.steeringAngleDeg)
+    else:
+      self.angle_filter.x = CC.actuators.steeringAngleDeg
 
   def lateral_angle(self, CC, CS):
     abs_torque = abs(CS.out.steeringTorque)
@@ -56,14 +71,21 @@ class CarController(CarControllerBase, SnGCarController):
       lat_active = False
 
     if lat_active:
-      apply_angle = CC.actuators.steeringAngleDeg
-      # Suppress low-speed hunting caused by coarse angle sensing/EPS actuation.
-      if CS.out.vEgoRaw < 10.0:
-        deadzone = np.interp(CS.out.vEgoRaw, [2.0, 10.0], [6.0, 3.0])
-        apply_angle = self.apply_angle_last + apply_center_deadzone(apply_angle - self.apply_angle_last, deadzone)
-      apply_angle = apply_steer_angle_limits_vm(apply_angle, self.apply_angle_last, CS.out.vEgoRaw,
+      apply_angle = apply_steer_angle_limits_vm(self.angle_filter.x, self.apply_angle_last, CS.out.vEgoRaw,
                                                 CS.out.steeringAngleDeg, True, self.p, self.VM)
-    else:
+      # When the previous angle is outside the lateral-accel bound (engaging in a curve, or speed rising and
+      # shrinking the bound), the clip above can move further than the jerk limit allows. Panda rejects that
+      # frame and the EPS faults on the gap in the 50 Hz stream, so walk back at the jerk limit instead.
+      # Panda's accel bound uses speed - 1 m/s, which leaves room for this recovery. From commaai/opendbc#3795.
+      max_angle_delta = min(get_max_angle_delta_vm(max(CS.out.vEgoRaw, 1.), self.VM, self.p), self.p.ANGLE_LIMITS.MAX_ANGLE_RATE)
+      apply_angle = rate_limit(apply_angle, self.apply_angle_last, -max_angle_delta, max_angle_delta)
+      # Panda bounds lateral accel at (wheel speed - 1 m/s). If even the jerk-limited command is beyond that,
+      # no active frame can be accepted (e.g. engaging in a curve well past 3.6 m/s^2). Hold the request off and
+      # keep the stream valid rather than send a frame Panda would drop.
+      if abs(apply_angle) > get_max_angle_vm(max(CS.out.vEgoRaw - 1., 1.), self.VM, self.p):
+        lat_active = False
+
+    if not lat_active:
       # LKAS_Request is clear, but the EPS still expects the angle field to track the wheel through full lock.
       apply_angle = float(np.clip(CS.out.steeringAngleDeg, -self.p.ANGLE_INACTIVE_MAX, self.p.ANGLE_INACTIVE_MAX))
 
@@ -132,6 +154,9 @@ class CarController(CarControllerBase, SnGCarController):
     can_sends = []
 
     # *** steering ***
+    if self.CP.flags & SubaruFlags.LKAS_ANGLE:
+      self.update_angle_filter(CC, CS)
+
     if (self.frame % self.p.STEER_STEP) == 0:
       if self.CP.flags & SubaruFlags.LKAS_ANGLE:
         can_sends.append(self.lateral_angle(CC, CS))
