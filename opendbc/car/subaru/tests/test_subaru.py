@@ -42,6 +42,7 @@ class TestSubaruAngleController(unittest.TestCase):
     self.controller.apply_angle_last = 0.0
     self.controller.driver_override = False
     self.controller.angle_override_confirm_frames = 0
+    self.controller.angle_handoff_active = False
     self.controller.packer = cast(CANPacker, object())
     self.controller.VM = cast(VehicleModel, object())
     self.controller.angle_filter = FirstOrderFilter(0.0, 0.0, DT_CTRL)
@@ -58,9 +59,11 @@ class TestSubaruAngleController(unittest.TestCase):
     return SimpleNamespace(enabled=enabled, latActive=lat_active, actuators=SimpleNamespace(steeringAngleDeg=angle))
 
   @staticmethod
-  def state(measured=0.0, torque=0.0, speed=15.0, brake=False, main=True, cruise=True):
-    return SimpleNamespace(out=SimpleNamespace(steeringAngleDeg=measured, steeringTorque=torque, vEgoRaw=speed, brakePressed=brake,
-                                               cruiseState=SimpleNamespace(available=main, enabled=cruise)))
+  def state(measured=0.0, torque=0.0, speed=15.0, brake=False, main=True, cruise=True, steering_rate=0.0):
+    out = SimpleNamespace(steeringAngleDeg=measured, steeringTorque=torque, steeringRateDeg=steering_rate,
+                          vEgoRaw=speed, brakePressed=brake,
+                          cruiseState=SimpleNamespace(available=main, enabled=cruise))
+    return SimpleNamespace(out=out)
 
   @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
   def test_inactive_tracks_measured_angle_through_full_lock(self, create_angle_msg):
@@ -145,6 +148,29 @@ class TestSubaruAngleController(unittest.TestCase):
     create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
     self.assertFalse(self.controller.driver_override)
     self.step(cc, self.state(measured=16, torque=99))
+    create_angle_msg.assert_called_with(self.controller.packer, 16.0, False)
+    self.step(cc, self.state(measured=16, torque=99))
+    create_angle_msg.assert_called_with(self.controller.packer, 20, True)
+
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_vm", return_value=1000.)
+  @patch("opendbc.car.subaru.carcontroller.get_max_angle_delta_vm", return_value=100.)
+  @patch("opendbc.car.subaru.carcontroller.apply_steer_angle_limits_vm", side_effect=lambda angle, *_: angle)
+  @patch("opendbc.car.subaru.carcontroller.subarucan.create_steering_control_angle")
+  def test_manual_handoff_waits_for_wheel_to_settle(self, create_angle_msg, *_):
+    cc = self.control(lat_active=True, angle=20)
+    self.step(cc, self.state(measured=10, steering_rate=3.0))
+    create_angle_msg.assert_called_with(self.controller.packer, 10.0, False)
+    self.assertTrue(self.controller.angle_handoff_active)
+
+    # The driver stopped turning, but one explicit inactive frame is still required.
+    self.step(cc, self.state(measured=11, steering_rate=0.0))
+    create_angle_msg.assert_called_with(self.controller.packer, 11.0, False)
+    self.assertFalse(self.controller.angle_handoff_active)
+
+    # The engage-edge anchor adds another inactive frame, then the request resumes.
+    self.step(cc, self.state(measured=12, steering_rate=0.0))
+    create_angle_msg.assert_called_with(self.controller.packer, 12.0, False)
+    self.step(cc, self.state(measured=12, steering_rate=0.0))
     create_angle_msg.assert_called_with(self.controller.packer, 20, True)
 
   def test_crosstrek_override_bands_match_measured_input(self):

@@ -17,6 +17,7 @@ from opendbc.sunnypilot.car.subaru.stop_and_go import SnGCarController
 # involves the total steering angle change rather than rate, but these limits work well for now
 MAX_STEER_RATE = 25  # deg/s
 MAX_STEER_RATE_FRAMES = 7  # tx control frames needed before torque can be cut
+ANGLE_REENGAGE_MAX_STEER_RATE = 2.0  # deg/s; do not re-take the wheel while the driver is still turning
 
 
 def get_safety_CP():
@@ -34,6 +35,7 @@ class CarController(CarControllerBase, SnGCarController, ComfortCarController):
     self.apply_angle_last = 0.0
     self.driver_override = False
     self.angle_override_confirm_frames = 0
+    self.angle_handoff_active = False
     self.lat_eligible_last = False
 
     self.cruise_button_prev = 0
@@ -78,6 +80,27 @@ class CarController(CarControllerBase, SnGCarController, ComfortCarController):
     brake_modes = ALTERNATIVE_EXPERIENCE.MADS_DISENGAGE_LATERAL_ON_BRAKE | ALTERNATIVE_EXPERIENCE.MADS_PAUSE_LATERAL_ON_BRAKE
     return not (braking and alt_exp & brake_modes)
 
+  def _angle_manual_handoff(self, CS, lat_eligible: bool) -> bool:
+    """Keep LKAS inactive while the driver is taking the wheel or still unwinding the turn."""
+    if not lat_eligible:
+      self.angle_handoff_active = False
+      return False
+
+    steering_rate = abs(getattr(CS.out, "steeringRateDeg", 0.0))
+    if self.driver_override:
+      self.angle_handoff_active = True
+      return True
+    if self.angle_handoff_active:
+      if steering_rate > ANGLE_REENGAGE_MAX_STEER_RATE:
+        return True
+      # Keep one explicit inactive frame after the wheel settles, anchoring Panda before re-entry.
+      self.angle_handoff_active = False
+      return True
+    if steering_rate > ANGLE_REENGAGE_MAX_STEER_RATE:
+      self.angle_handoff_active = True
+      return True
+    return False
+
   def lateral_angle(self, CC, CS):
     abs_torque = abs(CS.out.steeringTorque)
     if self.driver_override:
@@ -91,7 +114,9 @@ class CarController(CarControllerBase, SnGCarController, ComfortCarController):
     else:
       self.angle_override_confirm_frames = 0
 
-    lat_active = self.panda_allows_lateral(CC, CS) and not self.driver_override
+    lat_eligible = self.panda_allows_lateral(CC, CS)
+    manual_handoff = self._angle_manual_handoff(CS, lat_eligible)
+    lat_active = lat_eligible and not self.driver_override and not manual_handoff
     # Do not keep LKAS_Request asserted while the wheel is already beyond the
     # active-angle ceiling. The EPS can latch a permanent fault even when the
     # requested angle itself is clamped to the ceiling.
