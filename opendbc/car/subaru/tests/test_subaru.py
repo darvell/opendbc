@@ -267,6 +267,38 @@ class TestSubaruStopAndGoInitialization(unittest.TestCase):
         self.assertEqual((cp_sp.flags, cp_sp.safetyParam), expected)
 
 
+class TestSubaruDiagnosticLifecycle(unittest.TestCase):
+  def test_gen3_init_cannot_bypass_the_qualified_startup(self):
+    cp = SimpleNamespace(flags=SubaruFlags.DISABLE_EYESIGHT | SubaruFlags.LKAS_ANGLE)
+    sent = []
+    with self.assertRaisesRegex(RuntimeError, "qualified before constructing"):
+      CarInterface.init(cp, None, lambda **_: [], sent.extend)
+    self.assertEqual(sent, [])
+
+  def test_deinit_sends_enable_not_disable_with_real_isotp(self):
+    # This checks the existing deinit API, not a runtime recovery transaction. Nothing calls it on the car.
+    from opendbc.car.can_definitions import CanData
+    for response, accepted in ((b'\x68\x00', True), (b'\x7f\x28\x22', False), (b'\x68\x03', False)):
+      with self.subTest(response=response.hex()):
+        sent, pending = [], []
+
+        def send(messages, sent=sent, pending=pending, response=response):
+          sent.extend(messages)
+          for msg in messages:
+            if msg.dat[1:3] == b'\x10\x03':
+              pending.append(CanData(0x78F, bytes.fromhex("065003003201c200"), 2))
+            elif msg.dat[1:4] == b'\x28\x00\x01':
+              pending.append(CanData(0x78F, bytes([len(response)]) + response + bytes(7 - len(response)), 2))
+
+        def receive(wait_for_one=False, pending=pending):
+          return [[pending.pop(0)]] if pending else []
+
+        cp = SimpleNamespace(flags=SubaruFlags.DISABLE_EYESIGHT | SubaruFlags.LKAS_ANGLE)
+        self.assertEqual(CarInterface.deinit(cp, receive, send), accepted)
+        self.assertTrue(any(msg.dat[1:4] == b'\x28\x00\x01' for msg in sent))
+        self.assertFalse(any(msg.dat[1:4] == b'\x28\x03\x01' for msg in sent))
+
+
 class TestSubaruAlphaLongitudinal(unittest.TestCase):
   def test_params_keep_unverified_alpha_long_disabled(self):
     candidate = CAR.SUBARU_CROSSTREK_2025

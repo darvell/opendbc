@@ -134,11 +134,17 @@ class CarInterface(CarInterfaceBase):
   @staticmethod
   def init(CP, CP_SP, can_recv, can_send, communication_control=None):
     if CP.flags & SubaruFlags.DISABLE_EYESIGHT:
+      if CP.flags & SubaruFlags.LKAS_ANGLE:
+        raise RuntimeError("Gen3 EyeSight disable must be qualified before constructing longitudinal CarParams")
       if communication_control is None:
         communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX, uds.MESSAGE_TYPE.NORMAL])
       disable_ecu(can_recv, can_send, bus=2, addr=GLOBAL_ES_ADDR, com_cont_req=communication_control)
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
+    if not CP.flags & SubaruFlags.DISABLE_EYESIGHT:
+      return False
     communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
-    CarInterface.init(CP, can_recv, can_send, communication_control)
+    # Do not route through init: its CP_SP argument previously shifted the callbacks and request bytes.
+    # An acknowledgement is diagnostic evidence only, not proof of safe stock control restoration.
+    return disable_ecu(can_recv, can_send, bus=2, addr=GLOBAL_ES_ADDR, com_cont_req=communication_control, retry=1)

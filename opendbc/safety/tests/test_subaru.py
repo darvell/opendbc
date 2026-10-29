@@ -450,6 +450,14 @@ class TestSubaruGen2AngleStockLongitudinalSafety(SubaruAngleStockLongitudinalMad
                                                SubaruMsg.ES_Infotainment, SubaruMsg.ES_LKAS_Alert)}
   FWD_BLACKLISTED_ADDRS = fwd_blacklisted_addr(SubaruMsg.ES_LKAS_ANGLE, lkas_alert=True)
 
+  def test_locked_resume_research_cannot_inject_pedals_or_starve_stock_forwarding(self):
+    self.safety.set_controls_allowed(True)
+    for bus in (SUBARU_ALT_BUS, SUBARU_CAM_BUS):
+      self.assertFalse(self._tx(self.packer.make_can_msg_safety("Throttle", bus, {"Throttle_Pedal": 5})))
+      self.assertFalse(self._tx(self.packer.make_can_msg_safety("Brake_Pedal", bus, {"Speed": 3})))
+    for address in (SubaruMsg.Throttle, SubaruMsg.Brake_Pedal):
+      self.assertEqual(self.safety.safety_fwd_hook(SUBARU_MAIN_BUS, address), SUBARU_CAM_BUS)
+
   def test_controller_angle_stream_is_never_rejected(self):
     # The camera's 0x124 is blocked, so every rejected replacement frame is a gap the EPS faults on.
     # Drive the real controller through Panda safety across engagement edges, curves above the
