@@ -4,13 +4,14 @@ from typing import cast
 from unittest.mock import patch
 
 from opendbc.can import CANPacker, CANParser
+from opendbc.car.can_definitions import CanData
 from opendbc.car import DT_CTRL, Bus, structs
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.fingerprints import FW_VERSIONS
 from opendbc.car.subaru.interface import CarInterface
-from opendbc.car.subaru.subarucan import create_es_lkas_alert, create_es_static_1
+from opendbc.car.subaru.subarucan import create_es_infotainment, create_es_lkas_alert, create_es_static_1, subaru_checksum
 from opendbc.car.subaru.values import CAR, DBC, CanBus, CarControllerParams, SubaruFlags
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
@@ -397,6 +398,78 @@ class TestSubaruAlphaLongitudinal(unittest.TestCase):
 
     parser.update([1, [(0x240, bytes.fromhex("c30d00a054408ab6"), CanBus.alt)]])
     self.assertEqual(parser.vl["CruiseControl"]["Gen3_Cruise_Off"], 0)
+
+
+class TestSubaruInfotainment(unittest.TestCase):
+  """Replacing the camera's HUD frame must not erase its other received payload bits."""
+  DBC_NAMES = ("subaru_global_2017_generated", "subaru_global_2020_hybrid_generated")
+
+  def replace(self, raw, dbc, alert=structs.CarControl.HUDControl.VisualAlert.none, counter=None):
+    parser = CANParser(dbc, [("ES_Infotainment", 0)], CanBus.camera)
+    self.assertIn(0x323, parser.update([(0, [(0x323, raw, CanBus.camera)])]))
+    stock = dict(parser.vl["ES_Infotainment"])
+    original = stock.copy()
+    msg = create_es_infotainment(CANPacker(dbc), int(stock["COUNTER"]) if counter is None else counter, stock, alert)
+    self.assertEqual(stock, original)
+    self.assertEqual((msg[0], msg[2]), (0x323, CanBus.main))
+    self.assertEqual(msg[1][0], subaru_checksum(0x323, None, bytearray(msg[1])))
+    return msg[1]
+
+  @staticmethod
+  def with_checksum(raw):
+    data = bytearray(raw)
+    data[0] = subaru_checksum(0x323, None, data)
+    return bytes(data)
+
+  def test_recorded_camera_payload_is_preserved(self):
+    # Actual camera bus-2 frame from the stock-long route26 capture, not the bus-0 replacement.
+    raw = bytes.fromhex("990107214000000a")
+    for dbc in self.DBC_NAMES:
+      with self.subTest(dbc=dbc):
+        self.assertEqual(self.replace(raw, dbc), raw)
+
+  def test_car_interface_replacement_keeps_received_stock_status(self):
+    cp = CarInterface.get_non_essential_params(CAR.SUBARU_CROSSTREK_2025)
+    cp.flags |= SubaruFlags.SEND_INFOTAINMENT.value
+    ci = CarInterface(cp, CarInterface.get_non_essential_params_sp(cp, CAR.SUBARU_CROSSTREK_2025))
+    raw = bytes.fromhex("990107214000000a")
+    ci.update([(0, [])])  # register CarState's lazily requested CAN messages before reception
+    ci.update([(int(1e8), [CanData(0x323, raw, CanBus.camera)])])
+    cc = structs.CarControl().as_reader()
+    sent = ci.CC.update(cc, structs.CarControlSP(), ci.CS, 0)[1]
+    replacements = [data for addr, data, bus in sent if addr == 0x323 and bus == CanBus.main]
+    expected = bytearray(raw)
+    expected[1] &= 0xF0  # the controller starts its own rolling counter at zero
+    self.assertEqual(replacements, [self.with_checksum(expected)])
+
+  def test_every_untouched_payload_bit_survives(self):
+    # Check every bit outside checksum, counter and the intentionally edited alert (bits20..22).
+    for dbc in self.DBC_NAMES:
+      for bit in range(12, 64):
+        if 20 <= bit <= 22:
+          continue
+        with self.subTest(dbc=dbc, bit=bit):
+          raw = self.with_checksum((1 << bit).to_bytes(8, "little"))
+          self.assertEqual(self.replace(raw, dbc), raw)
+
+  def test_alert_and_counter_updates_touch_only_their_fields(self):
+    visual = structs.CarControl.HUDControl.VisualAlert
+    for dbc in self.DBC_NAMES:
+      for stock_alert in range(8):
+        for alert in (visual.none, visual.steerRequired, visual.fcw):
+          with self.subTest(dbc=dbc, stock_alert=stock_alert, alert=alert):
+            raw = bytearray.fromhex("0001fffbfefdfcfb")
+            raw[2] = (raw[2] & ~0x70) | (stock_alert << 4)
+            raw = self.with_checksum(raw)
+            expected_alert = 0 if stock_alert in (3, 4) else stock_alert
+            if alert == visual.steerRequired:
+              expected_alert = 3
+            elif alert == visual.fcw:
+              expected_alert = 2
+            expected = bytearray(raw)
+            expected[1] = (expected[1] & 0xF0) | 15
+            expected[2] = (expected[2] & ~0x70) | (expected_alert << 4)
+            self.assertEqual(self.replace(raw, dbc, alert, counter=31), self.with_checksum(expected))
 
 
 class TestSubaruLkasAlert(unittest.TestCase):

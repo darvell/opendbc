@@ -266,13 +266,16 @@ def create_es_status(packer, frame, es_status_msg, long_enabled, long_active, cr
 
 
 def create_es_infotainment(packer, frame, es_infotainment_msg, visual_alert):
-  # Filter stock LKAS disabled and Keep hands on steering wheel OFF alerts
+  # Preserve all received payload bits outside the counter and intentional LKAS alert edits.
+  # Unmodeled bits include stock status/customization values; zeroing them changes the camera's frame.
   values = {s: es_infotainment_msg[s] for s in [
     "CHECKSUM",
     "LKAS_State_Infotainment",
     "LKAS_Blue_Lines",
     "Signal1",
     "Signal2",
+    "Signal3",
+    "Signal4",
   ]}
 
   values["COUNTER"] = frame % 0x10
